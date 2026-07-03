@@ -1,0 +1,13 @@
+*
+
+!/README.md
+!/.gitignore
+!/pyproject.toml
+
+!/src/
+!/src/**/
+!/src/**/*.py
+
+!/tests/
+!/tests/**/
+!/tests/**/*.py

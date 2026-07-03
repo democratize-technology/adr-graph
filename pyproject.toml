@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "adr-graph"
+version = "0.1.0"
+description = "Graph-integrity MCP + CLI for Architecture Decision Records: typed frontmatter edges, wikilinks, and topology-as-signal (singletons, dead links, drift, reciprocity)."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Democratize Technology", email = "code-developer@democratize.technology" },
+]
+requires-python = ">=3.10"
+dependencies = [
+    "fastmcp>=3.2.0,<4.0.0",
+    "pyyaml>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0,<10.0.0",
+    "ruff>=0.5.0,<1.0.0",
+]
+
+[project.scripts]
+adr-graph = "adr_graph.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/adr_graph"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
