@@ -165,6 +165,57 @@ class Graph:
             },
         }
 
+    def dark_nodes(self) -> list[tuple[str, str, str]]:
+        """Returns list of (adr_id, raw_ref, intended_id) for unresolvable references that match a known alias,
+        or plain text references that are unlinked but map to an ID."""
+        alias_map = {}
+        for nid, adr in self.adrs.items():
+            for a in adr.aliases:
+                alias_map[a] = nid
+
+        dark = []
+        from .parser import canon, _FILENUM
+        for nid, adr in self.adrs.items():
+            # Check raw_refs for wiki links that match an alias but aren't canonical
+            for raw in adr.raw_refs:
+                text_to_check = raw.split("|")[0].strip()
+                if text_to_check in alias_map:
+                    target_id = alias_map[text_to_check]
+                    if not canon(raw) and not _FILENUM.match(text_to_check):
+                        dark.append((nid, raw, target_id))
+            
+            # Check unlinked_refs (plain text mentions)
+            for raw in adr.unlinked_refs:
+                c = canon(raw)
+                if c and c in self.adrs and c != nid:
+                    # It's an unlinked reference to a valid ADR
+                    dark.append((nid, raw, c))
+
+        return sorted(list(set(dark)))
+
+    def cross_repo_bleeds(self) -> list[tuple[str, str]]:
+        """Returns list of (adr_id, raw_ref) where a wikilink points outside the vault, or is nested inside an external markdown link."""
+        import re
+        bleeds = []
+        for nid, adr in self.adrs.items():
+            try:
+                text = adr.path.read_text(encoding="utf-8", errors="replace")
+                
+                # 1. Wikilinks containing paths (../)
+                for m in re.finditer(r'\[\[(\.\.[^\]]*)\]\]', text):
+                    bleeds.append((nid, m.group(0)))
+                
+                # 2. Markdown links that are external/cross-repo but contain wikilinks inside the text
+                for m in re.finditer(r'\[(.*?)\]\(([^)]+)\)', text):
+                    link_text, href = m.groups()
+                    if href.startswith('../'): # cross repo
+                        if '[[' in link_text and ']]' in link_text:
+                            bleeds.append((nid, m.group(0)))
+            except Exception:
+                pass
+                        
+        return sorted(list(set(bleeds)))
+
     def report(self) -> dict:
         n = len(self.adrs)
         edges = sum(len(v) for v in self.out.values())
@@ -172,8 +223,10 @@ class Graph:
         planned, broken = self.dead_links()
         recip = self.reciprocity_breaks()
         okf_viol = self.okf_violations()
+        dark = self.dark_nodes()
+        bleeds = self.cross_repo_bleeds()
         connected = sum(1 for nid in self.adrs if self.out[nid] or self.inn[nid])
-        ok = not broken and not recip and not okf_viol
+        ok = not broken and not recip and not okf_viol and not dark and not bleeds
         return {
             "ok": ok,
             "meta": {
@@ -188,6 +241,8 @@ class Graph:
                 "reciprocity_breaks": [{"a": a, "b": b, "detail": d} for a, b, d in recip],
                 "okf_violations": [{"adr": a, "detail": d} for a, d in okf_viol],
                 "orphan_suspects": suspect,
+                "dark_nodes": [{"adr": a, "raw_ref": r, "intended_id": i} for a, r, i in dark],
+                "cross_repo_bleeds": [{"adr": a, "raw_ref": r} for a, r in bleeds],
             },
             "signals": {
                 "intentional_singletons": intentional,

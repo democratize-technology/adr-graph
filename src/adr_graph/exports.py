@@ -32,12 +32,22 @@ def to_mermaid(g: Graph) -> str:
 def to_okf_bundle(g: Graph) -> dict:
     """OKF v0.1 bundle metadata summary with typed relationships."""
     concepts = []
+    
+    def resolve_concept_id(target_id: str) -> str:
+        if target_id in g.adrs:
+            return g.adrs[target_id].path.stem
+        # If the target is a dead link, we'll just emit the raw string (it will be an orphan node in the UI)
+        return target_id
+
     for nid, a in g.adrs.items():
         # Build typed relationship list from frontmatter edges
         relationships = []
         for rel_type in ("supersedes", "superseded_by", "related"):
             for target in a.fm.get(rel_type, []):
-                relationships.append({"type": rel_type, "target": target})
+                relationships.append({"type": rel_type, "target": resolve_concept_id(target)})
+        
+        links = [resolve_concept_id(t) for t in sorted(g.out.get(nid, set()))]
+        
         concepts.append({
             "concept_id": a.path.stem,
             "type": a.type or "adr",
@@ -47,7 +57,7 @@ def to_okf_bundle(g: Graph) -> dict:
             "tags": a.tags,
             "timestamp": a.timestamp,
             "status": a.status,
-            "links": sorted(g.out.get(nid, set())),
+            "links": links,
             "relationships": relationships,
         })
     return {

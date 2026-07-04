@@ -62,6 +62,9 @@ class ADR:
     tags: list[str] = field(default_factory=list)
     resource: str = ""
     paths: list[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
+    raw_refs: set[str] = field(default_factory=set)
+    unlinked_refs: set[str] = field(default_factory=set)
     fm: dict[str, list[str]] = field(default_factory=dict)  # typed edges -> [ids]
     fm_cross: set[str] = field(default_factory=set)
     body_refs: set[str] = field(default_factory=set)
@@ -116,6 +119,8 @@ def parse_file(path: Path) -> ADR:
     adr.status = str(meta.get("status") or "").strip().lower()
     tags = meta.get("tags") or []
     adr.tags = [str(t).strip().lower() for t in (tags if isinstance(tags, list) else [tags])]
+    aliases = meta.get("aliases") or meta.get("alias") or []
+    adr.aliases = [str(a).strip() for a in (aliases if isinstance(aliases, list) else [aliases]) if str(a).strip()]
     paths = meta.get("code_paths") or []
     adr.paths = [str(p).strip() for p in (paths if isinstance(paths, list) else [paths])]
     adr.resource = str(meta.get("resource") or "").strip()
@@ -134,6 +139,7 @@ def parse_file(path: Path) -> ADR:
             adr.planned.add(cid)
 
     for raw in _WIKI.findall(body):
+        adr.raw_refs.add(raw)
         cid = canon(raw)
         if not cid:
             fn = _FILENUM.match(raw.split("|")[0].strip())
@@ -145,11 +151,22 @@ def parse_file(path: Path) -> ADR:
     for href in _MDLINK.findall(body):
         if href.startswith(("http://", "https://", "#", "mailto:")):
             continue
+        adr.raw_refs.add(href)
         cid, cross = _canon_from_href(href)
         if cid and cid != nid:
             adr.body_refs.add(cid)
             if cross:
                 adr.body_cross.add(cid)
+
+    # Detect unlinked/dark references in plain text
+    clean_body = _WIKI.sub("", body)
+    clean_body = _MDLINK.sub("", clean_body)
+    # Remove HTML links just in case
+    clean_body = re.sub(r'<a[^>]*>.*?</a>', '', clean_body, flags=re.IGNORECASE)
+    
+    for m in re.finditer(r'\bADR-\d+\b', clean_body, re.IGNORECASE):
+        adr.unlinked_refs.add(m.group(0))
+
     return adr
 
 
