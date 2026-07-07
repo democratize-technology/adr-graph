@@ -46,10 +46,12 @@ class Graph:
 
     def singletons(self) -> tuple[list[str], list[str]]:
         """Returns (intentional_frontier, orphan_suspects)."""
+        from .parser import canon
         intentional, suspect = [], []
         for nid, adr in self.adrs.items():
             if not self.out[nid] and not self.inn[nid]:
-                if self._intentional_singleton(adr) or adr.fm_cross or adr.body_cross:
+                has_cross_unlinked = any(canon(r) not in self.adrs for r in adr.unlinked_refs if canon(r))
+                if self._intentional_singleton(adr) or adr.fm_cross or adr.body_cross or has_cross_unlinked:
                     intentional.append(nid)
                 else:
                     suspect.append(nid)
