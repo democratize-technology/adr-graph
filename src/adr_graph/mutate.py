@@ -470,7 +470,11 @@ def remediate_drift(root: Path, dry_run: bool = True) -> dict[str, Any]:
         added_links = []
         for c in only_fm:
             target_id = g.adrs[c].id if c in g.adrs else c
-            added_links.append(f"- [[{target_id}]]")
+            if c in g.adrs:
+                stem = g.adrs[c].path.stem
+                added_links.append(f"- [[{stem}|{target_id}]]")
+            else:
+                added_links.append(f"- [[{target_id}]]")
         
         if "## References" in body:
             append_str = "\n" + "\n".join(added_links) + "\n"
