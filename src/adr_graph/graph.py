@@ -221,10 +221,13 @@ class Graph:
             # Check unlinked_refs (plain text mentions)
             for raw in adr.unlinked_refs:
                 c = canon(raw)
-                if c and c in self.adrs and c != nid:
-                    # It's an unlinked reference to a valid ADR
-                    dark.append((nid, raw, c))
-
+                if c and c != nid:
+                    if c in self.adrs:
+                        # It's an unlinked reference to a valid ADR
+                        dark.append((nid, raw, c))
+                    else:
+                        # It's an unlinked reference to a non-existent ADR
+                        dark.append((nid, raw, "unresolved"))
         return sorted(list(set(dark)))
 
     def cross_repo_bleeds(self) -> list[tuple[str, str]]:
