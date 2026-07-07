@@ -50,8 +50,7 @@ class Graph:
         intentional, suspect = [], []
         for nid, adr in self.adrs.items():
             if not self.out[nid] and not self.inn[nid]:
-                has_cross_unlinked = any(canon(r) not in self.adrs for r in adr.unlinked_refs if canon(r))
-                if self._intentional_singleton(adr) or adr.fm_cross or adr.body_cross or has_cross_unlinked:
+                if self._intentional_singleton(adr):
                     intentional.append(nid)
                 else:
                     suspect.append(nid)
@@ -172,7 +171,7 @@ class Graph:
 
     def dark_nodes(self) -> list[tuple[str, str, str]]:
         """Returns list of (adr_id, raw_ref, intended_id) for unresolvable references that match a known alias,
-        or plain text references that are unlinked but map to an ID."""
+        plain text references that are unlinked but map to an ID, or completely unresolved dead links."""
         alias_map = {}
         for nid, adr in self.adrs.items():
             for a in adr.aliases:
@@ -181,13 +180,27 @@ class Graph:
         dark = []
         from .parser import canon, _FILENUM
         for nid, adr in self.adrs.items():
-            # Check raw_refs for wiki links that match an alias but aren't canonical
+            # Check raw_refs for any unresolved links
             for raw in adr.raw_refs:
+                # Skip absolute links
+                if raw.startswith(("http://", "https://", "file://", "mailto:", "#")):
+                    continue
+                
                 text_to_check = raw.split("|")[0].strip()
+                c = canon(raw)
+                m = _FILENUM.match(text_to_check)
+                
+                # Resolves to known canonical?
+                if c and c in self.adrs:
+                    continue
+                if m and f"ADR-{int(m.group(1))}" in self.adrs:
+                    continue
+                
+                # Unresolved!
                 if text_to_check in alias_map:
-                    target_id = alias_map[text_to_check]
-                    if not canon(raw) and not _FILENUM.match(text_to_check):
-                        dark.append((nid, raw, target_id))
+                    dark.append((nid, raw, alias_map[text_to_check]))
+                else:
+                    dark.append((nid, raw, "unresolved"))
             
             # Check unlinked_refs (plain text mentions)
             for raw in adr.unlinked_refs:
