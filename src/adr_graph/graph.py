@@ -171,7 +171,9 @@ class Graph:
 
     def dark_nodes(self) -> list[tuple[str, str, str]]:
         """Returns list of (adr_id, raw_ref, intended_id) for unresolvable references that match a known alias,
-        plain text references that are unlinked but map to an ID, or completely unresolved dead links."""
+        plain text references that are unlinked but map to an ID, or completely unresolved dead links.
+        This also flags 'ghost nodes' where a link uses a string that canon() resolves but Obsidian does not
+        (e.g., missing alias or wrong filename)."""
         alias_map = {}
         for nid, adr in self.adrs.items():
             for a in adr.aliases:
@@ -186,21 +188,35 @@ class Graph:
                 if raw.startswith(("http://", "https://", "file://", "mailto:", "#")):
                     continue
                 
+                # raw might be from a markdown link like 'href' or wikilink 'target|display'
+                # parser.py extracts href directly for MD links, and contents for wikilinks
                 text_to_check = raw.split("|")[0].strip()
+                
                 c = canon(raw)
                 m = _FILENUM.match(text_to_check)
                 
-                # Resolves to known canonical?
-                if c and c in self.adrs:
-                    continue
-                if m and f"ADR-{int(m.group(1))}" in self.adrs:
-                    continue
+                # Check if it resolves perfectly in Obsidian
+                # Obsidian resolves if text_to_check == stem OR text_to_check in aliases
+                resolved_in_obsidian = False
+                intended_id = None
                 
-                # Unresolved!
-                if text_to_check in alias_map:
-                    dark.append((nid, raw, alias_map[text_to_check]))
-                else:
-                    dark.append((nid, raw, "unresolved"))
+                if c and c in self.adrs:
+                    intended_id = c
+                elif m and f"ADR-{int(m.group(1))}" in self.adrs:
+                    intended_id = f"ADR-{int(m.group(1))}"
+                    
+                if intended_id:
+                    target_adr = self.adrs[intended_id]
+                    if text_to_check == target_adr.path.stem or text_to_check in target_adr.aliases:
+                        resolved_in_obsidian = True
+                        
+                if not resolved_in_obsidian:
+                    if text_to_check in alias_map:
+                        dark.append((nid, raw, alias_map[text_to_check]))
+                    elif intended_id:
+                        dark.append((nid, raw, intended_id))
+                    else:
+                        dark.append((nid, raw, "unresolved"))
             
             # Check unlinked_refs (plain text mentions)
             for raw in adr.unlinked_refs:

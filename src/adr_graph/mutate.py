@@ -409,7 +409,7 @@ def migrate_okf(root: Path, dry_run: bool = True) -> dict[str, Any]:
 
 
 def remediate_dark_nodes(root: Path, dry_run: bool = True) -> dict[str, Any]:
-    """Find plain-text ADR references in markdown bodies and convert them to wikilinks."""
+    """Find plain-text ADR references or malformed wikilinks and convert them to valid wikilinks."""
     from .graph import Graph
     g = Graph.build(root)
     dark = g.dark_nodes()
@@ -417,35 +417,39 @@ def remediate_dark_nodes(root: Path, dry_run: bool = True) -> dict[str, Any]:
     by_adr = {}
     for nid, raw, intended in dark:
         if nid not in by_adr:
-            by_adr[nid] = set()
-        by_adr[nid].add(raw)
+            by_adr[nid] = []
+        by_adr[nid].append((raw, intended))
         
     changes = []
-    token_pattern = re.compile(r'(\[\[.*?\]\]|\[.*?\]\(.*?\)|<a[^>]*>.*?</a>)')
     
-    for nid, raws in by_adr.items():
+    for nid, issues in by_adr.items():
         if nid not in g.adrs: continue
         path = g.adrs[nid].path
         meta, body = _load(path)
         
-        tokens = token_pattern.split(body)
         file_changed = False
         
-        for i, token in enumerate(tokens):
-            if i % 2 == 0:
-                for raw in raws:
-                    pattern = r'\b' + re.escape(raw) + r'\b'
-                    new_token = re.sub(pattern, f'[[{raw}]]', token)
-                    if new_token != token:
-                        token = new_token
-                        file_changed = True
-                tokens[i] = token
+        for raw, intended in issues:
+            if intended != "unresolved" and intended in g.adrs:
+                target_adr = g.adrs[intended]
+                correct_wiki = f"[[{target_adr.path.stem}|{target_adr.id}]]"
                 
+                # If it's already a wikilink but malformed (ghost node), replace it directly
+                if f"[[{raw}]]" in body:
+                    body = body.replace(f"[[{raw}]]", correct_wiki)
+                    file_changed = True
+                else:
+                    # It's likely a plain text mention
+                    pattern = r'\b' + re.escape(raw) + r'\b'
+                    new_body = re.sub(pattern, correct_wiki, body)
+                    if new_body != body:
+                        body = new_body
+                        file_changed = True
+                        
         if file_changed:
             changes.append(f"Fixed dark nodes in {nid}")
             if not dry_run:
-                new_body = "".join(tokens)
-                _write(path, meta, new_body)
+                _write(path, meta, body)
                 
     return {"ok": True, "dry_run": dry_run, "changes": changes, "remediated_count": len(changes)}
 

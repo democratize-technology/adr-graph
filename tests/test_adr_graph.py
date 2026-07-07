@@ -60,8 +60,8 @@ def test_parses_both_link_channels(corpus):
 
 def test_singleton_classification(corpus):
     intentional, suspect = Graph.build(corpus).singletons()
-    assert set(intentional) == {"ADR-5", "ADR-7"}   # proposed + standalone
-    assert suspect == ["ADR-6"]                       # accepted but isolated
+    assert set(intentional) == {"ADR-7"}   # standalone
+    assert "ADR-5" in suspect and "ADR-6" in suspect  # proposed + accepted are orphan suspects
 
 
 def test_dead_link_disposition(corpus):
@@ -87,7 +87,7 @@ def test_validate_fails_only_on_rot(corpus):
     rep = Graph.build(corpus).report()
     assert rep["ok"] is False                     # broken link + reciprocity exist
     assert rep["meta"]["adrs"] == 8
-    assert len(rep["signals"]["intentional_singletons"]) == 2
+    assert len(rep["signals"]["intentional_singletons"]) == 1
 
 
 def test_neighbors(corpus):

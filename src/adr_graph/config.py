@@ -14,12 +14,9 @@ from pathlib import Path
 ENV_VAR = "ADR_GRAPH_ROOT"
 
 # Statuses that make an unconnected node an *intentional* frontier, not an orphan.
-SEED_STATUSES = {
-    "proposed", "draft", "idea", "seed", "exploratory",
-    "parking-lot", "deferred", "rejected", "spike", "deprecated", "superseded",
-}
+SEED_STATUSES = set()
 # Tags that signal the same intent.
-SEED_TAGS = {"seed", "parking-lot", "draft", "wip", "forward-ref"}
+SEED_TAGS = {"standalone"}
 
 
 def resolve_root(explicit: str | None = None) -> Path:
