@@ -149,10 +149,13 @@ def parse_file(path: Path) -> ADR:
             if "/" in raw.split("ADR-")[0]:
                 adr.body_cross.add(cid)
     for href in _MDLINK.findall(body):
-        if href.startswith(("http://", "https://", "#", "mailto:")):
+        is_rs_url = href.startswith(("http://", "https://")) and "reasoning-services" in href and "docs/adr" in href
+        if href.startswith(("http://", "https://", "#", "mailto:")) and not is_rs_url:
             continue
         adr.raw_refs.add(href)
         cid, cross = _canon_from_href(href)
+        if is_rs_url:
+            cross = True
         if cid and cid != nid:
             adr.body_refs.add(cid)
             if cross:

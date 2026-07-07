@@ -49,7 +49,10 @@ class Graph:
         intentional, suspect = [], []
         for nid, adr in self.adrs.items():
             if not self.out[nid] and not self.inn[nid]:
-                (intentional if self._intentional_singleton(adr) else suspect).append(nid)
+                if self._intentional_singleton(adr) or adr.fm_cross or adr.body_cross:
+                    intentional.append(nid)
+                else:
+                    suspect.append(nid)
         return sorted(intentional, key=self._k), sorted(suspect, key=self._k)
 
     def dead_links(self) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
