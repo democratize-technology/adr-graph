@@ -106,6 +106,25 @@ def reconcile_related(adr: str = "", apply: bool = False, root: str = "") -> dic
 
 
 @mcp.tool
+def remediate_dark_nodes(dry_run: bool = True, root: str = "") -> dict[str, Any]:
+    """Find plain-text ADR references in markdown bodies and convert them to wikilinks. Dry-run by default."""
+    return mutate.remediate_dark_nodes(resolve_root(root), dry_run=dry_run)
+
+
+@mcp.tool
+def remediate_drift(dry_run: bool = True, root: str = "") -> dict[str, Any]:
+    """Find nodes where frontmatter typed edges exist but are missing from body links (drift),
+    and append them to the body as wikilinks. Dry-run by default."""
+    return mutate.remediate_drift(resolve_root(root), dry_run=dry_run)
+
+
+@mcp.tool
+def remediate_dead_links(dry_run: bool = True, root: str = "") -> dict[str, Any]:
+    """Find and remove references to non-existent ADRs from both frontmatter and body. Dry-run by default."""
+    return mutate.remediate_dead_links(resolve_root(root), dry_run=dry_run)
+
+
+@mcp.tool
 def read(adr: str, root: str = "") -> dict[str, Any]:
     """Read a single ADR by ID, returning its frontmatter details and body text."""
     g = _graph(root)

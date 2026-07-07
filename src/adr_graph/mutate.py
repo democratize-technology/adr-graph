@@ -406,3 +406,158 @@ def migrate_okf(root: Path, dry_run: bool = True) -> dict[str, Any]:
         "index_md": "would update" if dry_run else ("updated" if index_existed else "created"),
         "conformance": conformance,
     }
+
+
+def remediate_dark_nodes(root: Path, dry_run: bool = True) -> dict[str, Any]:
+    """Find plain-text ADR references in markdown bodies and convert them to wikilinks."""
+    from .graph import Graph
+    g = Graph.build(root)
+    dark = g.dark_nodes()
+    
+    by_adr = {}
+    for nid, raw, intended in dark:
+        if nid not in by_adr:
+            by_adr[nid] = set()
+        by_adr[nid].add(raw)
+        
+    changes = []
+    token_pattern = re.compile(r'(\[\[.*?\]\]|\[.*?\]\(.*?\)|<a[^>]*>.*?</a>)')
+    
+    for nid, raws in by_adr.items():
+        if nid not in g.adrs: continue
+        path = g.adrs[nid].path
+        meta, body = _load(path)
+        
+        tokens = token_pattern.split(body)
+        file_changed = False
+        
+        for i, token in enumerate(tokens):
+            if i % 2 == 0:
+                for raw in raws:
+                    pattern = r'\b' + re.escape(raw) + r'\b'
+                    new_token = re.sub(pattern, f'[[{raw}]]', token)
+                    if new_token != token:
+                        token = new_token
+                        file_changed = True
+                tokens[i] = token
+                
+        if file_changed:
+            changes.append(f"Fixed dark nodes in {nid}")
+            if not dry_run:
+                new_body = "".join(tokens)
+                _write(path, meta, new_body)
+                
+    return {"ok": True, "dry_run": dry_run, "changes": changes, "remediated_count": len(changes)}
+
+
+def remediate_drift(root: Path, dry_run: bool = True) -> dict[str, Any]:
+    """Find nodes where frontmatter typed edges exist but are missing from body links (drift),
+    and append them to the body as wikilinks."""
+    from .graph import Graph
+    g = Graph.build(root)
+    drifts = g.drift()
+    
+    changes = []
+    
+    for nid, only_fm, only_body in drifts:
+        if not only_fm:
+            continue
+            
+        if nid not in g.adrs: continue
+        path = g.adrs[nid].path
+        meta, body = _load(path)
+        
+        added_links = []
+        for c in only_fm:
+            target_id = g.adrs[c].id if c in g.adrs else c
+            added_links.append(f"- [[{target_id}]]")
+        
+        if "## References" in body:
+            append_str = "\n" + "\n".join(added_links) + "\n"
+        elif "## Related" in body:
+            append_str = "\n" + "\n".join(added_links) + "\n"
+        else:
+            append_str = "\n\n## References\n\n" + "\n".join(added_links) + "\n"
+            
+        changes.append(f"Fixed drift in {nid}: added {len(only_fm)} missing body links")
+        if not dry_run:
+            _write(path, meta, body + append_str)
+            
+    return {"ok": True, "dry_run": dry_run, "changes": changes, "remediated_count": len(changes)}
+
+def remediate_dead_links(root: Path, dry_run: bool = True) -> dict[str, Any]:
+    """Find and remove references to non-existent ADRs from both frontmatter and body."""
+    from .graph import Graph
+    g = Graph.build(root)
+    rep = g.report()
+    dead_links = rep.get("defects", {}).get("broken_dead_links", [])
+    
+    changes = []
+    
+    by_source = {}
+    for link in dead_links:
+        src = link["from"]
+        dst = link["to"]
+        if src not in by_source:
+            by_source[src] = []
+        by_source[src].append(dst)
+        
+    for src, dead_targets in by_source.items():
+        if src not in g.adrs: continue
+        path = g.adrs[src].path
+        meta, body = _load(path)
+        
+        fm_changed = False
+        for key in ["related", "supersedes", "superseded_by"]:
+            if key in meta:
+                val = meta[key]
+                if isinstance(val, list):
+                    new_val = []
+                    for x in val:
+                        target_id = f"ADR-{x}" if str(x).isdigit() else str(x)
+                        if target_id not in dead_targets:
+                            new_val.append(x)
+                    if len(new_val) != len(val):
+                        meta[key] = new_val if len(new_val) > 0 else []
+                        fm_changed = True
+                elif isinstance(val, str):
+                    target_id = f"ADR-{val}" if str(val).isdigit() else str(val)
+                    if target_id in dead_targets:
+                        del meta[key]
+                        fm_changed = True
+                    
+        body_lines = body.split('\n')
+        new_lines = []
+        body_changed = False
+        for line in body_lines:
+            line_changed = False
+            for target in dead_targets:
+                target_num = target.replace("ADR-", "")
+                if f"[[{target}]]" in line or f"[{target}]" in line or target in line or f"ADR-{target_num}" in line:
+                    line_changed = True
+            
+            if line_changed and line.strip().startswith("- "):
+                body_changed = True
+                continue 
+            elif line_changed:
+                for target in dead_targets:
+                    target_num = target.replace("ADR-", "")
+                    if f"[[{target}]]" in line:
+                        line = line.replace(f"[[{target}]]", f"{target}")
+                        body_changed = True
+                    import re
+                    pattern = r'\[([^\]]+)\]\([^\)]*' + target_num + r'[^\)]*\)'
+                    new_line = re.sub(pattern, r'\1', line)
+                    if new_line != line:
+                        line = new_line
+                        body_changed = True
+                new_lines.append(line)
+            else:
+                new_lines.append(line)
+                
+        if fm_changed or body_changed:
+            changes.append(f"Removed dead links to {dead_targets} from {src}")
+            if not dry_run:
+                _write(path, meta, "\n".join(new_lines))
+                
+    return {"ok": True, "dry_run": dry_run, "changes": changes, "remediated_count": len(changes)}
