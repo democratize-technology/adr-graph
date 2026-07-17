@@ -10,14 +10,69 @@ from typing import Any
 
 from pathlib import Path
 
+from collections.abc import Sequence
 from fastmcp import FastMCP
+from fastmcp.server.providers import Provider
+from fastmcp.resources import Resource
 
 from . import mutate
 from .config import resolve_root
 from .exports import render
 from .graph import Graph, canonify
 
-mcp = FastMCP("adr-graph")
+class ADRProvider(Provider):
+    async def _list_resources(self) -> Sequence[Resource]:
+        g = _graph(None)
+        resources = []
+        for a in g.adrs.values():
+            def make_reader(adr_obj=a):
+                def reader() -> str:
+                    return adr_obj.path.read_text(encoding="utf-8", errors="replace")
+                return reader
+
+            uri = a.resource or f"adr://{a.id}"
+            resources.append(
+                Resource.from_function(
+                    make_reader(a),
+                    uri=uri,
+                    name=a.title,
+                    description=a.description or f"Architectural Decision Record {a.id}",
+                )
+            )
+        return resources
+
+    async def _get_resource(self, uri: str, version: Any = None) -> Resource | None:
+        g = _graph(None)
+        if uri.startswith("adr://"):
+            adr_id = uri[len("adr://"):]
+            a = canonify(adr_id)
+            if a in g.adrs:
+                adr_obj = g.adrs[a]
+                if not adr_obj.resource:
+                    def make_reader(o=adr_obj):
+                        return o.path.read_text(encoding="utf-8", errors="replace")
+                    return Resource.from_function(
+                        make_reader(adr_obj),
+                        uri=uri,
+                        name=adr_obj.title,
+                        description=adr_obj.description or f"Architectural Decision Record {adr_obj.id}",
+                    )
+
+        for adr_obj in g.adrs.values():
+            m_uri = adr_obj.resource or f"adr://{adr_obj.id}"
+            if m_uri == uri:
+                def make_reader(o=adr_obj):
+                    return o.path.read_text(encoding="utf-8", errors="replace")
+                return Resource.from_function(
+                    make_reader(adr_obj),
+                    uri=m_uri,
+                    name=adr_obj.title,
+                    description=adr_obj.description or f"Architectural Decision Record {adr_obj.id}",
+                )
+        return None
+
+mcp = FastMCP("adr-graph", list_page_size=50)
+mcp.add_provider(ADRProvider())
 
 _GRAPH_CACHE: dict[Path, tuple[Graph, float]] = {}
 

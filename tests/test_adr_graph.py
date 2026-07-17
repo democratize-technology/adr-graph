@@ -45,6 +45,11 @@ def corpus(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
 def test_canon_normalizes_padding():
     assert canon("ADR-007") == "ADR-7"
     assert canon("infrastructure/ADR-402") == "ADR-402"
@@ -495,3 +500,24 @@ def test_okf_conformance_cli(okf_corpus):
     from adr_graph.__main__ import _cli
     # Should return 0 (always succeeds, it's a report)
     assert _cli(["okf-conformance", str(okf_corpus)]) == 0
+
+
+@pytest.mark.anyio
+async def test_mcp_resources_list(corpus, monkeypatch):
+    """Test that the ADRProvider lists resources correctly via the FastMCP client."""
+    monkeypatch.setenv("ADR_GRAPH_ROOT", str(corpus))
+    
+    from adr_graph.server import mcp
+    from fastmcp import Client
+    
+    async with Client(mcp) as client:
+        resources = await client.list_resources()
+        assert len(resources) == len(FILES)
+        
+        # Verify names and URIs
+        uris = {str(r.uri) for r in resources}
+        assert "adr://ADR-1" in uris
+        
+        # Verify pagination cursor logic (using the mcp variant manually)
+        result = await client.list_resources_mcp()
+        assert len(result.resources) > 0
