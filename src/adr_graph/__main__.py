@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import sys
+import asyncio
 
 from .config import resolve_root
 from .graph import Graph, canonify
@@ -230,7 +231,7 @@ def _cli(argv: list[str]) -> int:
     if cmd == "migrate-okf":
         root = rest[0] if rest else None
         from . import mutate
-        _emit(mutate.migrate_okf(resolve_root(root), dry_run=not apply))
+        _emit(asyncio.run(mutate.migrate_okf(resolve_root(root), dry_run=not apply)))
         return 0
 
     sys.stderr.write(f"unknown command: {cmd}\n{__doc__}\n")

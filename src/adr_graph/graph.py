@@ -46,7 +46,6 @@ class Graph:
 
     def singletons(self) -> tuple[list[str], list[str]]:
         """Returns (intentional_frontier, orphan_suspects)."""
-        from .parser import canon
         intentional, suspect = [], []
         for nid, adr in self.adrs.items():
             if not self.out[nid] and not self.inn[nid]:

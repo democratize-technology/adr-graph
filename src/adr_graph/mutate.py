@@ -338,7 +338,7 @@ def _generate_index(root: Path, adrs: dict) -> str:
     return "\n".join(parts)
 
 
-def migrate_okf(root: Path, dry_run: bool = True) -> dict[str, Any]:
+async def migrate_okf(root: Path, dry_run: bool = True, ctx: Any = None) -> dict[str, Any]:
     """Migrate ADR corpus to OKF v0.1 conformance.
 
     Ensures type fields, converts date→timestamp, synthesizes missing
@@ -347,7 +347,10 @@ def migrate_okf(root: Path, dry_run: bool = True) -> dict[str, Any]:
     adrs = parse_dir(root)
     file_changes: list[dict[str, Any]] = []
 
-    for nid, adr in sorted(adrs.items(), key=lambda x: x[1].num):
+    total = len(adrs)
+    for i, (nid, adr) in enumerate(sorted(adrs.items(), key=lambda x: x[1].num)):
+        if ctx:
+            await ctx.report_progress(i, total)
         meta, body = _load(adr.path)
         changes: list[str] = []
 
@@ -379,9 +382,14 @@ def migrate_okf(root: Path, dry_run: bool = True) -> dict[str, Any]:
                 changes.append("synthesized description")
 
         if changes:
+            if ctx:
+                ctx.info(f"[{nid}] " + ", ".join(changes))
             if not dry_run:
                 _write_okf(adr.path, meta, body)
             file_changes.append({"adr": nid, "file": adr.path.name, "changes": changes})
+
+    if ctx:
+        await ctx.report_progress(total, total)
 
     # Generate index.md
     index_path = root / "index.md"
@@ -408,7 +416,7 @@ def migrate_okf(root: Path, dry_run: bool = True) -> dict[str, Any]:
     }
 
 
-def remediate_dark_nodes(root: Path, dry_run: bool = True) -> dict[str, Any]:
+async def remediate_dark_nodes(root: Path, dry_run: bool = True, ctx: Any = None) -> dict[str, Any]:
     """Find plain-text ADR references or malformed wikilinks and convert them to valid wikilinks."""
     from .graph import Graph
     g = Graph.build(root)
@@ -422,8 +430,12 @@ def remediate_dark_nodes(root: Path, dry_run: bool = True) -> dict[str, Any]:
         
     changes = []
     
-    for nid, issues in by_adr.items():
-        if nid not in g.adrs: continue
+    total = len(by_adr)
+    for i, (nid, issues) in enumerate(by_adr.items()):
+        if ctx:
+            await ctx.report_progress(i, total)
+        if nid not in g.adrs:
+            continue
         path = g.adrs[nid].path
         meta, body = _load(path)
         
@@ -447,14 +459,20 @@ def remediate_dark_nodes(root: Path, dry_run: bool = True) -> dict[str, Any]:
                         file_changed = True
                         
         if file_changed:
-            changes.append(f"Fixed dark nodes in {nid}")
+            msg = f"Fixed dark nodes in {nid}"
+            changes.append(msg)
+            if ctx:
+                ctx.info(msg)
             if not dry_run:
                 _write(path, meta, body)
                 
+    if ctx:
+        await ctx.report_progress(total, total)
+
     return {"ok": True, "dry_run": dry_run, "changes": changes, "remediated_count": len(changes)}
 
 
-def remediate_drift(root: Path, dry_run: bool = True) -> dict[str, Any]:
+async def remediate_drift(root: Path, dry_run: bool = True, ctx: Any = None) -> dict[str, Any]:
     """Find nodes where frontmatter typed edges exist but are missing from body links (drift),
     and append them to the body as wikilinks."""
     from .graph import Graph
@@ -463,11 +481,15 @@ def remediate_drift(root: Path, dry_run: bool = True) -> dict[str, Any]:
     
     changes = []
     
-    for nid, only_fm, only_body in drifts:
+    total = len(drifts)
+    for i, (nid, only_fm, only_body) in enumerate(drifts):
+        if ctx:
+            await ctx.report_progress(i, total)
         if not only_fm:
             continue
             
-        if nid not in g.adrs: continue
+        if nid not in g.adrs:
+            continue
         path = g.adrs[nid].path
         meta, body = _load(path)
         
@@ -487,13 +509,19 @@ def remediate_drift(root: Path, dry_run: bool = True) -> dict[str, Any]:
         else:
             append_str = "\n\n## References\n\n" + "\n".join(added_links) + "\n"
             
-        changes.append(f"Fixed drift in {nid}: added {len(only_fm)} missing body links")
+        msg = f"Fixed drift in {nid}: added {len(only_fm)} missing body links"
+        changes.append(msg)
+        if ctx:
+            ctx.info(msg)
         if not dry_run:
             _write(path, meta, body + append_str)
             
+    if ctx:
+        await ctx.report_progress(total, total)
+
     return {"ok": True, "dry_run": dry_run, "changes": changes, "remediated_count": len(changes)}
 
-def remediate_dead_links(root: Path, dry_run: bool = True) -> dict[str, Any]:
+async def remediate_dead_links(root: Path, dry_run: bool = True, ctx: Any = None) -> dict[str, Any]:
     """Find and remove references to non-existent ADRs from both frontmatter and body."""
     from .graph import Graph
     g = Graph.build(root)
@@ -510,8 +538,12 @@ def remediate_dead_links(root: Path, dry_run: bool = True) -> dict[str, Any]:
             by_source[src] = []
         by_source[src].append(dst)
         
-    for src, dead_targets in by_source.items():
-        if src not in g.adrs: continue
+    total = len(by_source)
+    for i, (src, dead_targets) in enumerate(by_source.items()):
+        if ctx:
+            await ctx.report_progress(i, total)
+        if src not in g.adrs:
+            continue
         path = g.adrs[src].path
         meta, body = _load(path)
         
@@ -564,8 +596,14 @@ def remediate_dead_links(root: Path, dry_run: bool = True) -> dict[str, Any]:
                 new_lines.append(line)
                 
         if fm_changed or body_changed:
-            changes.append(f"Removed dead links to {dead_targets} from {src}")
+            msg = f"Removed dead links to {dead_targets} from {src}"
+            changes.append(msg)
+            if ctx:
+                ctx.info(msg)
             if not dry_run:
                 _write(path, meta, "\n".join(new_lines))
                 
+    if ctx:
+        await ctx.report_progress(total, total)
+
     return {"ok": True, "dry_run": dry_run, "changes": changes, "remediated_count": len(changes)}
