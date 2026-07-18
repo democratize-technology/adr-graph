@@ -16,6 +16,7 @@ from fastmcp.server.providers import Provider
 from fastmcp.resources import Resource
 from fastmcp.dependencies import Depends, CurrentContext
 from fastmcp.tools.base import ToolResult
+from fastmcp.apps.approval import Approval
 
 
 from . import mutate
@@ -41,6 +42,7 @@ from .formatters import (
 import json
 
 mcp = FastMCP("adr-graph", list_page_size=50)
+mcp.add_provider(Approval())
 
 from fastmcp.server.transforms import ResourcesAsTools, PromptsAsTools
 
@@ -201,36 +203,51 @@ async def export(fmt: str = "json", g: Graph = Depends(get_graph)) -> Any:
 
 @mcp.tool
 async def supersede(superseding: str, superseded: str, root: Path = Depends(get_root)) -> ToolResult:
-    """Record that one ADR supersedes another, writing BOTH sides of the edge. Returns self-navigable Markdown containing JSON-LD."""
+    """Record that one ADR supersedes another, writing BOTH sides of the edge. Returns self-navigable Markdown containing JSON-LD.
+
+    IMPORTANT: You MUST call the `request_approval` tool to get user confirmation before executing this destructive action.
+    """
     res = mutate.supersede(root, superseding, superseded)
     return format_mutation(res, "Supersede Edges Updated", f"Record that {superseding} supersedes {superseded}.")
 
 
 @mcp.tool
 async def reconcile_related(adr: str = "", apply: bool = False, root: Path = Depends(get_root)) -> ToolResult:
-    """Derive frontmatter `related` from body links. Dry-run unless apply=True. Returns self-navigable Markdown containing JSON-LD."""
+    """Derive frontmatter `related` from body links. Dry-run unless apply=True. Returns self-navigable Markdown containing JSON-LD.
+
+    IMPORTANT: If `apply` is True, you MUST call the `request_approval` tool to get user confirmation before executing this action.
+    """
     res = mutate.reconcile_related(root, adr_id=adr, apply=apply)
     return format_mutation(res, "Reconcile Related Links", "Derive frontmatter `related` fields from body references.")
 
 
-@mcp.tool
+@mcp.tool(task=True)
 async def remediate_dark_nodes(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
-    """Find plain-text ADR references in markdown bodies and convert them to wikilinks. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
+    """Find plain-text ADR references in markdown bodies and convert them to wikilinks. Dry-run by default. Returns self-navigable Markdown containing JSON-LD.
+
+    IMPORTANT: If `dry_run` is False, you MUST call the `request_approval` tool to get user confirmation before executing this action.
+    """
     res = await mutate.remediate_dark_nodes(root, ctx=ctx, dry_run=dry_run)
     return format_mutation(res, "Remediate Dark Nodes", "Convert plaintext references to wikilinks.")
 
 
-@mcp.tool
+@mcp.tool(task=True)
 async def remediate_drift(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Find nodes where frontmatter typed edges exist but are missing from body links (drift),
-    and append them to the body as wikilinks. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
+    and append them to the body as wikilinks. Dry-run by default. Returns self-navigable Markdown containing JSON-LD.
+
+    IMPORTANT: If `dry_run` is False, you MUST call the `request_approval` tool to get user confirmation before executing this action.
+    """
     res = await mutate.remediate_drift(root, ctx=ctx, dry_run=dry_run)
     return format_mutation(res, "Remediate Drift", "Append missing body links from frontmatter definitions.")
 
 
-@mcp.tool
+@mcp.tool(task=True)
 async def remediate_dead_links(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
-    """Find and remove references to non-existent ADRs from both frontmatter and body. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
+    """Find and remove references to non-existent ADRs from both frontmatter and body. Dry-run by default. Returns self-navigable Markdown containing JSON-LD.
+
+    IMPORTANT: If `dry_run` is False, you MUST call the `request_approval` tool to get user confirmation before executing this action.
+    """
     res = await mutate.remediate_dead_links(root, ctx=ctx, dry_run=dry_run)
     return format_mutation(res, "Remediate Dead Links", "Remove references to non-existent ADRs from metadata and content.")
 
@@ -289,15 +306,36 @@ async def path(from_adr: str, to_adr: str, g: Graph = Depends(get_graph)) -> Too
 
 
 @mcp.tool
-async def set_status(adr: str, status: str, root: Path = Depends(get_root)) -> ToolResult:
-    """Update the status of a single ADR. Returns self-navigable Markdown containing JSON-LD."""
+async def set_status(adr: str, status: str = "", ctx: Context = CurrentContext(), root: Path = Depends(get_root)) -> ToolResult:
+    """Update the status of a single ADR. Returns self-navigable Markdown containing JSON-LD.
+
+    IMPORTANT: You MUST call the `request_approval` tool to get user confirmation before executing this action.
+    """
+    VALID_STATUSES = ["proposed", "accepted", "rejected", "deprecated", "superseded"]
+    if not status or status.lower() not in VALID_STATUSES:
+        result = await ctx.elicit(
+            message=f"Choose a valid status for ADR {adr}:" if status else f"Select new status for ADR {adr}:",
+            response_type=VALID_STATUSES,
+            response_title="Choose ADR Status",
+            response_description=f"Updating status for {adr}."
+        )
+        if result.action == "accept":
+            status = result.data
+        elif result.action == "decline":
+            return format_mutation({"ok": False, "error": "Status update declined by user."}, "Set ADR Status", "Update status of ADR.")
+        else:
+            return format_mutation({"ok": False, "error": "Operation cancelled."}, "Set ADR Status", "Update status of ADR.")
+
     res = mutate.set_status(root, adr, status)
     return format_mutation(res, "Set ADR Status", f"Update status of {adr} to {status}.")
 
 
-@mcp.tool
+@mcp.tool(task=True)
 async def rename(old: str, new: str, dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
-    """Rename/renumber an ADR and cascade updates to all files referencing it. Returns self-navigable Markdown containing JSON-LD."""
+    """Rename/renumber an ADR and cascade updates to all files referencing it. Returns self-navigable Markdown containing JSON-LD.
+
+    IMPORTANT: If `dry_run` is False, you MUST call the `request_approval` tool to get user confirmation before executing this action.
+    """
     res = mutate.rename(root, old, new, dry_run=dry_run)
     return format_mutation(res, "Rename ADR", f"Rename/renumber ADR {old} to {new}.")
 
@@ -321,16 +359,53 @@ async def blast_radius(adr: str, g: Graph = Depends(get_graph)) -> ToolResult:
 
 
 @mcp.tool
-async def propose_adr(title: str, status: str = "proposed", context: str = "", tags: list[str] | None = None, root: Path = Depends(get_root)) -> ToolResult:
+async def propose_adr(
+    title: str = "",
+    status: str = "proposed",
+    context: str = "",
+    tags: list[str] | None = None,
+    ctx: Context = CurrentContext(),
+    g: Graph = Depends(get_graph),
+    root: Path = Depends(get_root)
+) -> ToolResult:
     """Scaffold a new ADR file in the corpus with the next available ID. Returns self-navigable Markdown containing JSON-LD."""
+    if not title:
+        result = await ctx.elicit(
+            message="Enter the title for the new ADR:",
+            response_type=str,
+            response_title="ADR Title Required",
+            response_description="A descriptive title is required to scaffold a new ADR."
+        )
+        if result.action == "accept":
+            title = result.data
+        else:
+            return format_mutation({"ok": False, "error": "ADR proposal cancelled."}, "Propose ADR", "Scaffold new ADR.")
+
+    if tags is None:
+        existing_tags = sorted(list({t for a in g.adrs.values() for t in a.tags if t}))
+        if existing_tags:
+            result = await ctx.elicit(
+                message="Select tags for the new ADR (optional):",
+                response_type=[existing_tags],
+                response_title="Select ADR Tags",
+                response_description="Choose one or more existing tags, or decline/cancel to skip."
+            )
+            if result.action == "accept":
+                tags = result.data
+            elif result.action == "cancel":
+                return format_mutation({"ok": False, "error": "ADR proposal cancelled."}, "Propose ADR", "Scaffold new ADR.")
+
     res = mutate.propose(root, title, status, context, tags)
     return format_mutation(res, "Propose ADR", f"Scaffold new ADR titled '{title}'.")
 
 
-@mcp.tool
+@mcp.tool(task=True)
 async def migrate_okf(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Migrate the ADR corpus to OKF v0.1 conformance. Ensures type fields, converts
-    date→timestamp, synthesizes descriptions, generates index.md. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
+    date→timestamp, synthesizes descriptions, generates index.md. Dry-run by default. Returns self-navigable Markdown containing JSON-LD.
+
+    IMPORTANT: If `dry_run` is False, you MUST call the `request_approval` tool to get user confirmation before executing this action.
+    """
     res = await mutate.migrate_okf(root, ctx=ctx, dry_run=dry_run)
     return format_mutation(res, "Migrate OKF Conformance", "Migrate corpus to OKF v0.1 specification.")
 
