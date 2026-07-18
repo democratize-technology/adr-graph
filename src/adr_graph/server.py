@@ -20,6 +20,23 @@ from . import mutate
 from .config import async_resolve_root
 from .exports import render
 from .graph import Graph, canonify
+from .markdown_ld_renderer import render_response
+from .formatters import (
+    format_validate,
+    format_okf_conformance,
+    format_singletons,
+    format_dead_links,
+    format_reciprocity,
+    format_neighbors,
+    format_read,
+    format_list,
+    format_search,
+    format_path,
+    format_drift,
+    format_blast_radius,
+    format_mutation,
+)
+import json
 
 mcp = FastMCP("adr-graph", list_page_size=50)
 
@@ -100,117 +117,120 @@ async def _graph(ctx: Context | None, root_path: str | None) -> Graph:
 
 
 @mcp.tool
-async def validate(ctx: Context, root: str = "") -> dict[str, Any]:
+async def validate(ctx: Context, root: str = "") -> str:
     """Full topology report. `ok` is False only on genuine rot (undeclared dead
     links or broken reciprocity) — intentional singletons and planned forward
-    references are reported under `signals`, never as failures."""
-    return await _graph(ctx, root).report()
+    references are reported under `signals`, never as failures. Returns self-navigable Markdown containing JSON-LD."""
+    g = await _graph(ctx, root)
+    res = g.report()
+    return format_validate(res)
 
 
 @mcp.tool
-async def okf_conformance(ctx: Context, root: str = "") -> dict[str, Any]:
+async def okf_conformance(ctx: Context, root: str = "") -> str:
     """OKF v0.1 conformance report: violations (missing required fields),
-    warnings (missing recommended fields), and field coverage metrics."""
-    return await _graph(ctx, root).okf_conformance()
+    warnings (missing recommended fields), and field coverage metrics. Returns self-navigable Markdown containing JSON-LD."""
+    g = await _graph(ctx, root)
+    res = g.okf_conformance()
+    return format_okf_conformance(res)
 
 
 @mcp.tool
-async def find_singletons(ctx: Context, root: str = "") -> dict[str, Any]:
-    """Disconnected nodes, split into intentional frontier vs orphan suspects."""
-    intentional, suspect = await _graph(ctx, root).singletons()
-    return {"intentional_frontier": intentional, "orphan_suspects": suspect}
+async def find_singletons(ctx: Context, root: str = "") -> str:
+    """Disconnected nodes, split into intentional frontier vs orphan suspects. Returns self-navigable Markdown containing JSON-LD."""
+    g = await _graph(ctx, root)
+    intentional, suspect = g.singletons()
+    res = {"intentional_frontier": intentional, "orphan_suspects": suspect}
+    return format_singletons(res)
 
 
 @mcp.tool
-async def find_dead_links(ctx: Context, root: str = "") -> dict[str, Any]:
-    """Unresolved references, split into planned (signal) vs broken (defect)."""
-    planned, broken = await _graph(ctx, root).dead_links()
-    return {
+async def find_dead_links(ctx: Context, root: str = "") -> str:
+    """Unresolved references, split into planned (signal) vs broken (defect). Returns self-navigable Markdown containing JSON-LD."""
+    g = await _graph(ctx, root)
+    planned, broken = g.dead_links()
+    res = {
         "planned_forward_refs": [{"from": s, "to": t} for s, t in planned],
         "broken_dead_links": [{"from": s, "to": t} for s, t in broken],
     }
+    return format_dead_links(res)
 
 
 @mcp.tool
-async def check_reciprocity(ctx: Context, root: str = "") -> dict[str, Any]:
-    """supersede / superseded_by edges that are not mirrored on the other node."""
-    breaks = await _graph(ctx, root).reciprocity_breaks()
-    return {"reciprocity_breaks": [{"a": a, "b": b, "detail": d} for a, b, d in breaks]}
+async def check_reciprocity(ctx: Context, root: str = "") -> str:
+    """supersede / superseded_by edges that are not mirrored on the other node. Returns self-navigable Markdown containing JSON-LD."""
+    g = await _graph(ctx, root)
+    breaks = g.reciprocity_breaks()
+    res = {"reciprocity_breaks": [{"a": a, "b": b, "detail": d} for a, b, d in breaks]}
+    return format_reciprocity(res)
 
 
 @mcp.tool
-async def neighbors(ctx: Context, adr: str, depth: int = 1, root: str = "") -> dict[str, Any]:
-    """Authored-link neighbourhood of an ADR — the grounding-context primitive."""
-    return await _graph(ctx, root).neighbors(adr, depth=depth)
+async def neighbors(ctx: Context, adr: str, depth: int = 1, root: str = "") -> str:
+    """Authored-link neighbourhood of an ADR — the grounding-context primitive. Returns self-navigable Markdown containing JSON-LD."""
+    g = await _graph(ctx, root)
+    res = g.neighbors(adr, depth=depth)
+    return format_neighbors(res)
 
 
 @mcp.tool
 async def export(ctx: Context, fmt: str = "json", root: str = "") -> Any:
-    """Render the graph as 'json', 'mermaid', or 'okf' (bundle summary with typed relationships)."""
-    return render(await _graph(ctx, root), fmt)
-
-
-@mcp.tool
-async def supersede(ctx: Context, superseding: str, superseded: str, root: str = "") -> dict[str, Any]:
-    """Record that one ADR supersedes another, writing BOTH sides of the edge."""
-    return mutate.supersede(await async_resolve_root(ctx, root), superseding, superseded)
-
-
-@mcp.tool
-async def reconcile_related(ctx: Context, adr: str = "", apply: bool = False, root: str = "") -> dict[str, Any]:
-    """Derive frontmatter `related` from body links. Dry-run unless apply=True."""
-    return mutate.reconcile_related(await async_resolve_root(ctx, root), adr_id=adr, apply=apply)
-
-
-@mcp.tool
-async def remediate_dark_nodes(ctx: Context, dry_run: bool = True, root: str = "") -> dict[str, Any]:
-    """Find plain-text ADR references in markdown bodies and convert them to wikilinks. Dry-run by default."""
-    return await mutate.remediate_dark_nodes(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
-
-
-@mcp.tool
-async def remediate_drift(ctx: Context, dry_run: bool = True, root: str = "") -> dict[str, Any]:
-    """Find nodes where frontmatter typed edges exist but are missing from body links (drift),
-    and append them to the body as wikilinks. Dry-run by default."""
-    return await mutate.remediate_drift(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
-
-
-@mcp.tool
-async def remediate_dead_links(ctx: Context, dry_run: bool = True, root: str = "") -> dict[str, Any]:
-    """Find and remove references to non-existent ADRs from both frontmatter and body. Dry-run by default."""
-    return await mutate.remediate_dead_links(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
-
-
-@mcp.tool
-async def read(ctx: Context, adr: str, root: str = "") -> dict[str, Any]:
-    """Read a single ADR by ID, returning its frontmatter details and body text."""
+    """Render the graph as 'json', 'mermaid', or 'okf' (bundle summary with typed relationships). Returns self-navigable Markdown containing JSON-LD."""
     g = await _graph(ctx, root)
-    a = canonify(adr)
-    if a not in g.adrs:
-        return {"error": f"ADR {a} not found"}
-    adr_obj = g.adrs[a]
-    from .mutate import _load
-    meta, body = _load(adr_obj.path)
-    return {
-        "id": adr_obj.id,
-        "title": adr_obj.title,
-        "description": adr_obj.description,
-        "resource": adr_obj.resource,
-        "type": adr_obj.type,
-        "timestamp": adr_obj.timestamp,
-        "status": adr_obj.status,
-        "tags": adr_obj.tags,
-        "metadata": meta,
-        "body": body,
-    }
+    res = render(g, fmt)
+    if fmt.lower() == "mermaid":
+        return f"```mermaid\n{res}\n```"
+    return render_response(
+        title=f"Graph Export ({fmt.upper()})",
+        description=f"Exported topology in {fmt.upper()} format.",
+        json_ld_type="ExportAction",
+        json_ld_data=res if isinstance(res, dict) else {"content": res},
+        markdown_body=f"```json\n{json.dumps(res, indent=2)}\n```" if isinstance(res, dict) else res,
+    )
+
+
+@mcp.tool
+async def supersede(ctx: Context, superseding: str, superseded: str, root: str = "") -> str:
+    """Record that one ADR supersedes another, writing BOTH sides of the edge. Returns self-navigable Markdown containing JSON-LD."""
+    res = mutate.supersede(await async_resolve_root(ctx, root), superseding, superseded)
+    return format_mutation(res, "Supersede Edges Updated", f"Record that {superseding} supersedes {superseded}.")
+
+
+@mcp.tool
+async def reconcile_related(ctx: Context, adr: str = "", apply: bool = False, root: str = "") -> str:
+    """Derive frontmatter `related` from body links. Dry-run unless apply=True. Returns self-navigable Markdown containing JSON-LD."""
+    res = mutate.reconcile_related(await async_resolve_root(ctx, root), adr_id=adr, apply=apply)
+    return format_mutation(res, "Reconcile Related Links", "Derive frontmatter `related` fields from body references.")
+
+
+@mcp.tool
+async def remediate_dark_nodes(ctx: Context, dry_run: bool = True, root: str = "") -> str:
+    """Find plain-text ADR references in markdown bodies and convert them to wikilinks. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
+    res = await mutate.remediate_dark_nodes(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
+    return format_mutation(res, "Remediate Dark Nodes", "Convert plaintext references to wikilinks.")
+
+
+@mcp.tool
+async def remediate_drift(ctx: Context, dry_run: bool = True, root: str = "") -> str:
+    """Find nodes where frontmatter typed edges exist but are missing from body links (drift),
+    and append them to the body as wikilinks. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
+    res = await mutate.remediate_drift(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
+    return format_mutation(res, "Remediate Drift", "Append missing body links from frontmatter definitions.")
+
+
+@mcp.tool
+async def remediate_dead_links(ctx: Context, dry_run: bool = True, root: str = "") -> str:
+    """Find and remove references to non-existent ADRs from both frontmatter and body. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
+    res = await mutate.remediate_dead_links(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
+    return format_mutation(res, "Remediate Dead Links", "Remove references to non-existent ADRs from metadata and content.")
 
 
 @mcp.tool(name="list")
-async def list_tool(ctx: Context, status: str = "", tag: str = "", limit: int = 100, offset: int = 0, root: str = "") -> list[dict[str, Any]]:
-    """List all ADRs, optionally filtered by status and/or tag."""
+async def list_tool(ctx: Context, status: str = "", tag: str = "", limit: int = 100, offset: int = 0, root: str = "") -> str:
+    """List all ADRs, optionally filtered by status and/or tag. Returns self-navigable Markdown containing JSON-LD."""
     g = await _graph(ctx, root)
     adrs = g.list_adrs(status=status, tag=tag, limit=limit, offset=offset)
-    return [
+    adrs_data = [
         {
             "id": a.id,
             "title": a.title,
@@ -223,14 +243,21 @@ async def list_tool(ctx: Context, status: str = "", tag: str = "", limit: int = 
         }
         for a in adrs
     ]
+    query_info = []
+    if status:
+        query_info.append(f"status='{status}'")
+    if tag:
+        query_info.append(f"tag='{tag}'")
+    
+    return format_list(adrs_data, ", ".join(query_info))
 
 
 @mcp.tool
-async def search(ctx: Context, query: str, status: str = "", limit: int = 100, offset: int = 0, root: str = "") -> list[dict[str, Any]]:
-    """Search for ADRs by title substring match, optionally filtered by status."""
+async def search(ctx: Context, query: str, status: str = "", limit: int = 100, offset: int = 0, root: str = "") -> str:
+    """Search for ADRs by title substring match, optionally filtered by status. Returns self-navigable Markdown containing JSON-LD."""
     g = await _graph(ctx, root)
     adrs = g.search_adrs(query, status=status, limit=limit, offset=offset)
-    return [
+    adrs_data = [
         {
             "id": a.id,
             "title": a.title,
@@ -243,53 +270,64 @@ async def search(ctx: Context, query: str, status: str = "", limit: int = 100, o
         }
         for a in adrs
     ]
+    return format_search(adrs_data, query)
 
 
 @mcp.tool
-async def path(ctx: Context, from_adr: str, to_adr: str, root: str = "") -> dict[str, Any]:
-    """Find the BFS shortest path between two ADRs."""
-    return await _graph(ctx, root).find_path(from_adr, to_adr)
+async def path(ctx: Context, from_adr: str, to_adr: str, root: str = "") -> str:
+    """Find the BFS shortest path between two ADRs. Returns self-navigable Markdown containing JSON-LD."""
+    g = await _graph(ctx, root)
+    res = g.find_path(from_adr, to_adr)
+    return format_path(res, from_adr, to_adr)
 
 
 @mcp.tool
-async def set_status(ctx: Context, adr: str, status: str, root: str = "") -> dict[str, Any]:
-    """Update the status of a single ADR."""
-    return mutate.set_status(await async_resolve_root(ctx, root), adr, status)
+async def set_status(ctx: Context, adr: str, status: str, root: str = "") -> str:
+    """Update the status of a single ADR. Returns self-navigable Markdown containing JSON-LD."""
+    res = mutate.set_status(await async_resolve_root(ctx, root), adr, status)
+    return format_mutation(res, "Set ADR Status", f"Update status of {adr} to {status}.")
 
 
 @mcp.tool
-async def rename(ctx: Context, old: str, new: str, dry_run: bool = True, root: str = "") -> dict[str, Any]:
-    """Rename/renumber an ADR and cascade updates to all files referencing it."""
-    return mutate.rename(await async_resolve_root(ctx, root), old, new, dry_run=dry_run)
+async def rename(ctx: Context, old: str, new: str, dry_run: bool = True, root: str = "") -> str:
+    """Rename/renumber an ADR and cascade updates to all files referencing it. Returns self-navigable Markdown containing JSON-LD."""
+    res = mutate.rename(await async_resolve_root(ctx, root), old, new, dry_run=dry_run)
+    return format_mutation(res, "Rename ADR", f"Rename/renumber ADR {old} to {new}.")
 
 
 @mcp.tool
-async def drift(ctx: Context, root: str = "") -> list[dict[str, Any]]:
-    """Nodes where frontmatter typed edges and body links disagree."""
-    res = await _graph(ctx, root).drift()
-    return [
+async def drift(ctx: Context, root: str = "") -> str:
+    """Nodes where frontmatter typed edges and body links disagree. Returns self-navigable Markdown containing JSON-LD."""
+    g = await _graph(ctx, root)
+    res = g.drift()
+    drift_data = [
         {"adr": a, "in_yaml_not_body": f, "in_body_not_yaml": b}
         for a, f, b in res
     ]
+    return format_drift(drift_data)
 
 
 @mcp.tool
-async def blast_radius(ctx: Context, adr: str, root: str = "") -> dict[str, Any]:
-    """Find downstream ADRs that transitively depend on this ADR."""
-    return await _graph(ctx, root).blast_radius(adr)
+async def blast_radius(ctx: Context, adr: str, root: str = "") -> str:
+    """Find downstream ADRs that transitively depend on this ADR. Returns self-navigable Markdown containing JSON-LD."""
+    g = await _graph(ctx, root)
+    res = g.blast_radius(adr)
+    return format_blast_radius(res)
 
 
 @mcp.tool
-async def propose_adr(ctx: Context, title: str, status: str = "proposed", context: str = "", tags: list[str] | None = None, root: str = "") -> dict[str, Any]:
-    """Scaffold a new ADR file in the corpus with the next available ID."""
-    return mutate.propose(await async_resolve_root(ctx, root), title, status, context, tags)
+async def propose_adr(ctx: Context, title: str, status: str = "proposed", context: str = "", tags: list[str] | None = None, root: str = "") -> str:
+    """Scaffold a new ADR file in the corpus with the next available ID. Returns self-navigable Markdown containing JSON-LD."""
+    res = mutate.propose(await async_resolve_root(ctx, root), title, status, context, tags)
+    return format_mutation(res, "Propose ADR", f"Scaffold new ADR titled '{title}'.")
 
 
 @mcp.tool
-async def migrate_okf(ctx: Context, dry_run: bool = True, root: str = "") -> dict[str, Any]:
+async def migrate_okf(ctx: Context, dry_run: bool = True, root: str = "") -> str:
     """Migrate the ADR corpus to OKF v0.1 conformance. Ensures type fields, converts
-    date→timestamp, synthesizes descriptions, generates index.md. Dry-run by default."""
-    return await mutate.migrate_okf(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
+    date→timestamp, synthesizes descriptions, generates index.md. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
+    res = await mutate.migrate_okf(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
+    return format_mutation(res, "Migrate OKF Conformance", "Migrate corpus to OKF v0.1 specification.")
 
 
 @mcp.resource("adr://{adr_id}")
@@ -300,6 +338,7 @@ async def adr_resource(adr_id: str) -> str:
     if a not in g.adrs:
         raise ValueError(f"ADR {a} not found")
     return g.adrs[a].path.read_text(encoding="utf-8", errors="replace")
+
 
 @mcp.tool
 async def read(ctx: Context, adr: str, root: str = "") -> str:
@@ -319,7 +358,7 @@ async def read(ctx: Context, adr: str, root: str = "") -> str:
         nav_options.append("### 🔗 Outgoing References (This ADR depends on / references):")
         for oe in sorted(out_edges):
             if oe in g.adrs:
-                nav_options.append(f"- **{oe}**: {g.adrs[oe].title}")
+                nav_options.append(f"- **[{oe}](adr://{oe})**: {g.adrs[oe].title}")
             else:
                 nav_options.append(f"- **{oe}** *(Missing/Unresolved)*")
                 
@@ -328,7 +367,7 @@ async def read(ctx: Context, adr: str, root: str = "") -> str:
         nav_options.append("### ⬅️ Incoming References (These ADRs depend on / reference this one):")
         for ie in sorted(in_edges):
             if ie in g.adrs:
-                nav_options.append(f"- **{ie}**: {g.adrs[ie].title}")
+                nav_options.append(f"- **[{ie}](adr://{ie})**: {g.adrs[ie].title}")
             else:
                 nav_options.append(f"- **{ie}**")
 
@@ -339,25 +378,21 @@ async def read(ctx: Context, adr: str, root: str = "") -> str:
             nav_options.append(f"- {cr}")
 
     nav_section = "\n".join(nav_options) if nav_options else "*No direct neighborhood links found.*"
-    tags_str = ", ".join(obj.tags) if obj.tags else "None"
+    
+    adr_data = {
+        "id": obj.id,
+        "title": obj.title,
+        "description": obj.description,
+        "resource": obj.resource,
+        "type": obj.type,
+        "timestamp": obj.timestamp,
+        "status": obj.status,
+        "tags": obj.tags,
+        "metadata": meta,
+        "body": body,
+    }
+    return format_read(adr_data, nav_section)
 
-    return f"""# {obj.id}: {obj.title}
-
-**Status:** `{obj.status}` | **Date:** `{obj.timestamp}` | **Tags:** `{tags_str}`
-
-## 📖 Description
-{obj.description or "*No description available.*"}
-
----
-
-## 📝 Content
-{body}
-
----
-
-## 🧭 Navigation Options (Where to go next)
-{nav_section}
-"""
 
 
 @mcp.tool
