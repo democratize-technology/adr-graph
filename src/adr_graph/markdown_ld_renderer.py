@@ -1,9 +1,11 @@
-"""Helper to render MCP tool responses as rich Markdown containing embedded JSON-LD and self-navigable links."""
+"""Helper to render MCP tool responses as rich Markdown with structured JSON-LD separated into tool content blocks."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
+from mcp.types import TextContent, EmbeddedResource, TextResourceContents
+from fastmcp.tools.base import ToolResult
 
 def render_response(
     *,
@@ -13,8 +15,8 @@ def render_response(
     json_ld_data: dict[str, Any] | list[Any],
     markdown_body: str,
     navigation_links: list[dict[str, str]] | None = None,
-) -> str:
-    """Renders a tool response as JSON-LD embedded in Markdown.
+) -> ToolResult:
+    """Renders a tool response separating human-readable Markdown from machine-readable JSON-LD.
     
     Args:
         title: The display title of the report/tool output.
@@ -48,14 +50,26 @@ def render_response(
             else:
                 nav_section += f"- **[{label}]({uri})**\n"
                 
-    return f"""# {title}
+    markdown_text = f"""# {title}
 
 > {description}
-
-```jsonld
-{json_ld_str}
-```
 
 ## 📊 Details
 {markdown_body}
 {nav_section}"""
+
+    # We return a ToolResult with the Markdown as a TextContent,
+    # and the JSON-LD as a separate EmbeddedResource.
+    return ToolResult(
+        content=[
+            TextContent(type="text", text=markdown_text),
+            EmbeddedResource(
+                type="resource",
+                resource=TextResourceContents(
+                    uri=f"metadata://adr-graph/{json_ld_type.lower()}",
+                    mimeType="application/ld+json",
+                    text=json_ld_str
+                )
+            )
+        ]
+    )

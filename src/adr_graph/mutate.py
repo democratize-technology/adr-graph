@@ -13,6 +13,7 @@ import re
 import yaml
 
 from .parser import _FILENUM, canon, parse_dir
+from .config import get_ctx_callbacks
 
 _FM_PREFIX = "---\n"
 
@@ -344,7 +345,8 @@ async def migrate_okf(root: Path, dry_run: bool = True, ctx: Any = None) -> dict
     Ensures type fields, converts date→timestamp, synthesizes missing
     descriptions, generates index.md. Dry-run by default.
     """
-    adrs = parse_dir(root)
+    progress_cb, log_cb = get_ctx_callbacks(ctx)
+    adrs = parse_dir(root, progress_cb=progress_cb, log_cb=log_cb)
     file_changes: list[dict[str, Any]] = []
 
     total = len(adrs)
@@ -383,7 +385,7 @@ async def migrate_okf(root: Path, dry_run: bool = True, ctx: Any = None) -> dict
 
         if changes:
             if ctx:
-                ctx.info(f"[{nid}] " + ", ".join(changes))
+                await ctx.info(f"[{nid}] " + ", ".join(changes))
             if not dry_run:
                 _write_okf(adr.path, meta, body)
             file_changes.append({"adr": nid, "file": adr.path.name, "changes": changes})
@@ -396,14 +398,14 @@ async def migrate_okf(root: Path, dry_run: bool = True, ctx: Any = None) -> dict
     index_existed = index_path.exists()
     if not dry_run:
         # Re-parse to pick up any written changes
-        adrs = parse_dir(root)
+        adrs = parse_dir(root, progress_cb=progress_cb, log_cb=log_cb)
     index_content = _generate_index(root, adrs)
     if not dry_run:
         index_path.write_text(index_content, encoding="utf-8")
 
     # Build conformance summary
     from .graph import Graph
-    g = Graph.build(root)
+    g = Graph.build(root, progress_cb=progress_cb, log_cb=log_cb)
     conformance = g.okf_conformance()
 
     return {
@@ -419,7 +421,8 @@ async def migrate_okf(root: Path, dry_run: bool = True, ctx: Any = None) -> dict
 async def remediate_dark_nodes(root: Path, dry_run: bool = True, ctx: Any = None) -> dict[str, Any]:
     """Find plain-text ADR references or malformed wikilinks and convert them to valid wikilinks."""
     from .graph import Graph
-    g = Graph.build(root)
+    progress_cb, log_cb = get_ctx_callbacks(ctx)
+    g = Graph.build(root, progress_cb=progress_cb, log_cb=log_cb)
     dark = g.dark_nodes()
     
     by_adr = {}
@@ -462,7 +465,7 @@ async def remediate_dark_nodes(root: Path, dry_run: bool = True, ctx: Any = None
             msg = f"Fixed dark nodes in {nid}"
             changes.append(msg)
             if ctx:
-                ctx.info(msg)
+                await ctx.info(msg)
             if not dry_run:
                 _write(path, meta, body)
                 
@@ -476,7 +479,8 @@ async def remediate_drift(root: Path, dry_run: bool = True, ctx: Any = None) -> 
     """Find nodes where frontmatter typed edges exist but are missing from body links (drift),
     and append them to the body as wikilinks."""
     from .graph import Graph
-    g = Graph.build(root)
+    progress_cb, log_cb = get_ctx_callbacks(ctx)
+    g = Graph.build(root, progress_cb=progress_cb, log_cb=log_cb)
     drifts = g.drift()
     
     changes = []
@@ -512,7 +516,7 @@ async def remediate_drift(root: Path, dry_run: bool = True, ctx: Any = None) -> 
         msg = f"Fixed drift in {nid}: added {len(only_fm)} missing body links"
         changes.append(msg)
         if ctx:
-            ctx.info(msg)
+            await ctx.info(msg)
         if not dry_run:
             _write(path, meta, body + append_str)
             
@@ -524,7 +528,8 @@ async def remediate_drift(root: Path, dry_run: bool = True, ctx: Any = None) -> 
 async def remediate_dead_links(root: Path, dry_run: bool = True, ctx: Any = None) -> dict[str, Any]:
     """Find and remove references to non-existent ADRs from both frontmatter and body."""
     from .graph import Graph
-    g = Graph.build(root)
+    progress_cb, log_cb = get_ctx_callbacks(ctx)
+    g = Graph.build(root, progress_cb=progress_cb, log_cb=log_cb)
     rep = g.report()
     dead_links = rep.get("defects", {}).get("broken_dead_links", [])
     
@@ -599,7 +604,7 @@ async def remediate_dead_links(root: Path, dry_run: bool = True, ctx: Any = None
             msg = f"Removed dead links to {dead_targets} from {src}"
             changes.append(msg)
             if ctx:
-                ctx.info(msg)
+                await ctx.info(msg)
             if not dry_run:
                 _write(path, meta, "\n".join(new_lines))
                 

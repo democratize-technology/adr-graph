@@ -87,7 +87,7 @@ def _fm_refs(val: object) -> list[tuple[str, bool]]:
     return out
 
 
-def parse_file(path: Path) -> ADR:
+def parse_file(path: Path, log_cb: callable[[str, str], None] | None = None) -> ADR:
     text = path.read_text(encoding="utf-8", errors="replace")
     meta: dict = {}
     m = _FM_SPLIT.match(text)
@@ -96,9 +96,11 @@ def parse_file(path: Path) -> ADR:
     if m:
         try:
             meta = yaml.safe_load(m.group(1)) or {}
-        except yaml.YAMLError:
+        except yaml.YAMLError as e:
             meta = {}
             unparseable = True
+            if log_cb:
+                log_cb("warning", f"Unparseable YAML frontmatter in {path.name}: {e}")
         body = text[m.end():]
     if not isinstance(meta, dict):
         meta = {}
@@ -173,11 +175,22 @@ def parse_file(path: Path) -> ADR:
     return adr
 
 
-def parse_dir(root: Path) -> dict[str, ADR]:
+def parse_dir(
+    root: Path,
+    progress_cb: callable[[int, int, str], None] | None = None,
+    log_cb: callable[[str, str], None] | None = None,
+) -> dict[str, ADR]:
     adrs: dict[str, ADR] = {}
+    md_files = []
     for path in sorted(root.rglob("*.md")):
         if path.name.lower() in {"readme.md", "index.md", "log.md"}:
             continue
-        adr = parse_file(path)
+        md_files.append(path)
+        
+    total = len(md_files)
+    for i, path in enumerate(md_files):
+        if progress_cb:
+            progress_cb(i, total, path.name)
+        adr = parse_file(path, log_cb=log_cb)
         adrs[adr.id] = adr
     return adrs

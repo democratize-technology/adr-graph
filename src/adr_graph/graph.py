@@ -22,8 +22,13 @@ class Graph:
     inn: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
 
     @classmethod
-    def build(cls, root: Path) -> "Graph":
-        adrs = parse_dir(root)
+    def build(
+        cls,
+        root: Path,
+        progress_cb: callable[[int, int, str], None] | None = None,
+        log_cb: callable[[str, str], None] | None = None,
+    ) -> "Graph":
+        adrs = parse_dir(root, progress_cb=progress_cb, log_cb=log_cb)
         g = cls(adrs=adrs)
         nodes = set(adrs)
         for nid, adr in adrs.items():

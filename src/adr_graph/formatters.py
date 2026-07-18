@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 from .markdown_ld_renderer import render_response
+from fastmcp.tools.base import ToolResult
 
-def format_validate(res: dict[str, Any]) -> str:
+def format_validate(res: dict[str, Any]) -> ToolResult:
     status_emoji = "✅" if res["ok"] else "❌"
     md = f"### Status: {status_emoji} {'ADR Graph is clean' if res['ok'] else 'ADR Graph has defects'}\n\n"
     
@@ -69,7 +70,7 @@ def format_validate(res: dict[str, Any]) -> str:
         navigation_links=nav
     )
 
-def format_okf_conformance(res: dict[str, Any]) -> str:
+def format_okf_conformance(res: dict[str, Any]) -> ToolResult:
     status = "✅ Conformant" if res["conformant"] else "❌ Non-conformant"
     md = f"### Conformance Status: {status} ({res['conformance_pct']}% of records comply)\n\n"
     
@@ -104,7 +105,7 @@ def format_okf_conformance(res: dict[str, Any]) -> str:
         navigation_links=nav
     )
 
-def format_singletons(res: dict[str, Any]) -> str:
+def format_singletons(res: dict[str, Any]) -> ToolResult:
     intentional = res.get("intentional_frontier", [])
     suspect = res.get("orphan_suspects", [])
     
@@ -135,7 +136,7 @@ def format_singletons(res: dict[str, Any]) -> str:
         navigation_links=nav
     )
 
-def format_dead_links(res: dict[str, Any]) -> str:
+def format_dead_links(res: dict[str, Any]) -> ToolResult:
     planned = res.get("planned_forward_refs", [])
     broken = res.get("broken_dead_links", [])
     
@@ -167,7 +168,7 @@ def format_dead_links(res: dict[str, Any]) -> str:
         navigation_links=nav
     )
 
-def format_reciprocity(res: dict[str, Any]) -> str:
+def format_reciprocity(res: dict[str, Any]) -> ToolResult:
     breaks = res.get("reciprocity_breaks", [])
     
     md = ""
@@ -186,7 +187,7 @@ def format_reciprocity(res: dict[str, Any]) -> str:
         markdown_body=md,
     )
 
-def format_neighbors(res: dict[str, Any]) -> str:
+def format_neighbors(res: dict[str, Any]) -> ToolResult:
     adr = res.get("adr", "")
     title = res.get("title", "")
     depth = res.get("depth", 1)
@@ -223,7 +224,7 @@ def format_neighbors(res: dict[str, Any]) -> str:
         navigation_links=nav
     )
 
-def format_read(adr_data: dict[str, Any], nav_section: str) -> str:
+def format_read(adr_data: dict[str, Any], nav_section: str) -> ToolResult:
     tags_str = ", ".join(adr_data['tags']) if adr_data['tags'] else "None"
     md = f"""### Metadata
 - **Status:** `{adr_data['status']}`
@@ -260,7 +261,7 @@ def format_read(adr_data: dict[str, Any], nav_section: str) -> str:
         navigation_links=nav
     )
 
-def format_list(adrs: list[dict[str, Any]], query_info: str = "") -> str:
+def format_list(adrs: list[dict[str, Any]], query_info: str = "") -> ToolResult:
     md = f"Found {len(adrs)} ADR(s){f' matching {query_info}' if query_info else ''}.\n\n"
     if adrs:
         md += "| ID | Title | Status | Date | Tags |\n| --- | --- | --- | --- | --- |\n"
@@ -284,7 +285,7 @@ def format_list(adrs: list[dict[str, Any]], query_info: str = "") -> str:
         navigation_links=nav
     )
 
-def format_search(adrs: list[dict[str, Any]], query: str) -> str:
+def format_search(adrs: list[dict[str, Any]], query: str) -> ToolResult:
     md = f"Search query: `{query}`\n"
     md += f"Found {len(adrs)} matching ADR(s).\n\n"
     if adrs:
@@ -309,7 +310,7 @@ def format_search(adrs: list[dict[str, Any]], query: str) -> str:
         navigation_links=nav
     )
 
-def format_path(res: dict[str, Any], from_adr: str, to_adr: str) -> str:
+def format_path(res: dict[str, Any], from_adr: str, to_adr: str) -> ToolResult:
     path_nodes = res.get("path", [])
     
     md = f"### Path search from **{from_adr}** to **{to_adr}**\n\n"
@@ -335,7 +336,7 @@ def format_path(res: dict[str, Any], from_adr: str, to_adr: str) -> str:
         navigation_links=nav
     )
 
-def format_drift(res: list[dict[str, Any]]) -> str:
+def format_drift(res: list[dict[str, Any]]) -> ToolResult:
     md = ""
     if res:
         md += "#### ⚠️ Drift Detected in Nodes\n"
@@ -361,7 +362,7 @@ def format_drift(res: list[dict[str, Any]]) -> str:
         navigation_links=nav
     )
 
-def format_blast_radius(res: dict[str, Any]) -> str:
+def format_blast_radius(res: dict[str, Any]) -> ToolResult:
     adr = res.get("adr", "")
     radius = res.get("blast_radius", [])
     count = res.get("count", 0)
@@ -389,7 +390,7 @@ def format_blast_radius(res: dict[str, Any]) -> str:
         navigation_links=nav
     )
 
-def format_mutation(res: dict[str, Any], title: str, description: str) -> str:
+def format_mutation(res: dict[str, Any], title: str, description: str) -> ToolResult:
     ok = res.get("ok", False)
     changed = res.get("changed", [])
     error = res.get("error", "")

@@ -14,10 +14,12 @@ from collections.abc import Sequence
 from fastmcp import FastMCP, Context
 from fastmcp.server.providers import Provider
 from fastmcp.resources import Resource
+from fastmcp.dependencies import Depends, CurrentContext
+from fastmcp.tools.base import ToolResult
 
 
 from . import mutate
-from .config import async_resolve_root
+from .config import async_resolve_root, get_ctx_callbacks
 from .exports import render
 from .graph import Graph, canonify
 from .markdown_ld_renderer import render_response
@@ -40,6 +42,11 @@ import json
 
 mcp = FastMCP("adr-graph", list_page_size=50)
 
+from fastmcp.server.transforms import ResourcesAsTools, PromptsAsTools
+
+mcp.add_transform(ResourcesAsTools(mcp))
+mcp.add_transform(PromptsAsTools(mcp))
+
 class ADRProvider(Provider):
     async def _list_resources(self) -> Sequence[Resource]:
         g = await _graph(None, None)
@@ -50,11 +57,10 @@ class ADRProvider(Provider):
                     return adr_obj.path.read_text(encoding="utf-8", errors="replace")
                 return reader
 
-            uri = a.resource or f"adr://{a.id}"
             resources.append(
                 Resource.from_function(
                     make_reader(a),
-                    uri=uri,
+                    uri=a.resource or f"adr://{a.id}",
                     name=a.title,
                     description=a.description or f"Architectural Decision Record {a.id}",
                 )
@@ -103,51 +109,58 @@ def _get_dir_state(root: Path) -> float:
     return max(f.stat().st_mtime for f in md_files)
 
 
-async def _graph(ctx: Context | None, root_path: str | None) -> Graph:
-    root = await async_resolve_root(ctx, root_path)
+async def _graph(ctx: Context | None, root_path: str | Path | None) -> Graph:
+    root = await async_resolve_root(ctx, str(root_path) if root_path else None)
     current_state = _get_dir_state(root)
     cached = _GRAPH_CACHE.get(root)
     if cached:
         cached_graph, cached_state = cached
         if cached_state == current_state:
             return cached_graph
-    g = Graph.build(root)
+    
+    progress_cb, log_cb = get_ctx_callbacks(ctx)
+    g = Graph.build(root, progress_cb=progress_cb, log_cb=log_cb)
     _GRAPH_CACHE[root] = (g, current_state)
     return g
 
 
+async def get_root(ctx: Context = CurrentContext()) -> Path:
+    return await async_resolve_root(ctx, None)
+
+
+async def get_graph(ctx: Context = CurrentContext()) -> Graph:
+    root = await get_root(ctx)
+    return await _graph(ctx, root)
+
+
 @mcp.tool
-async def validate(ctx: Context, root: str = "") -> str:
+async def validate(g: Graph = Depends(get_graph)) -> ToolResult:
     """Full topology report. `ok` is False only on genuine rot (undeclared dead
     links or broken reciprocity) — intentional singletons and planned forward
     references are reported under `signals`, never as failures. Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     res = g.report()
     return format_validate(res)
 
 
 @mcp.tool
-async def okf_conformance(ctx: Context, root: str = "") -> str:
+async def okf_conformance(g: Graph = Depends(get_graph)) -> ToolResult:
     """OKF v0.1 conformance report: violations (missing required fields),
     warnings (missing recommended fields), and field coverage metrics. Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     res = g.okf_conformance()
     return format_okf_conformance(res)
 
 
 @mcp.tool
-async def find_singletons(ctx: Context, root: str = "") -> str:
+async def find_singletons(g: Graph = Depends(get_graph)) -> ToolResult:
     """Disconnected nodes, split into intentional frontier vs orphan suspects. Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     intentional, suspect = g.singletons()
     res = {"intentional_frontier": intentional, "orphan_suspects": suspect}
     return format_singletons(res)
 
 
 @mcp.tool
-async def find_dead_links(ctx: Context, root: str = "") -> str:
+async def find_dead_links(g: Graph = Depends(get_graph)) -> ToolResult:
     """Unresolved references, split into planned (signal) vs broken (defect). Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     planned, broken = g.dead_links()
     res = {
         "planned_forward_refs": [{"from": s, "to": t} for s, t in planned],
@@ -157,26 +170,23 @@ async def find_dead_links(ctx: Context, root: str = "") -> str:
 
 
 @mcp.tool
-async def check_reciprocity(ctx: Context, root: str = "") -> str:
+async def check_reciprocity(g: Graph = Depends(get_graph)) -> ToolResult:
     """supersede / superseded_by edges that are not mirrored on the other node. Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     breaks = g.reciprocity_breaks()
     res = {"reciprocity_breaks": [{"a": a, "b": b, "detail": d} for a, b, d in breaks]}
     return format_reciprocity(res)
 
 
 @mcp.tool
-async def neighbors(ctx: Context, adr: str, depth: int = 1, root: str = "") -> str:
+async def neighbors(adr: str, depth: int = 1, g: Graph = Depends(get_graph)) -> ToolResult:
     """Authored-link neighbourhood of an ADR — the grounding-context primitive. Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     res = g.neighbors(adr, depth=depth)
     return format_neighbors(res)
 
 
 @mcp.tool
-async def export(ctx: Context, fmt: str = "json", root: str = "") -> Any:
+async def export(fmt: str = "json", g: Graph = Depends(get_graph)) -> Any:
     """Render the graph as 'json', 'mermaid', or 'okf' (bundle summary with typed relationships). Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     res = render(g, fmt)
     if fmt.lower() == "mermaid":
         return f"```mermaid\n{res}\n```"
@@ -190,45 +200,44 @@ async def export(ctx: Context, fmt: str = "json", root: str = "") -> Any:
 
 
 @mcp.tool
-async def supersede(ctx: Context, superseding: str, superseded: str, root: str = "") -> str:
+async def supersede(superseding: str, superseded: str, root: Path = Depends(get_root)) -> ToolResult:
     """Record that one ADR supersedes another, writing BOTH sides of the edge. Returns self-navigable Markdown containing JSON-LD."""
-    res = mutate.supersede(await async_resolve_root(ctx, root), superseding, superseded)
+    res = mutate.supersede(root, superseding, superseded)
     return format_mutation(res, "Supersede Edges Updated", f"Record that {superseding} supersedes {superseded}.")
 
 
 @mcp.tool
-async def reconcile_related(ctx: Context, adr: str = "", apply: bool = False, root: str = "") -> str:
+async def reconcile_related(adr: str = "", apply: bool = False, root: Path = Depends(get_root)) -> ToolResult:
     """Derive frontmatter `related` from body links. Dry-run unless apply=True. Returns self-navigable Markdown containing JSON-LD."""
-    res = mutate.reconcile_related(await async_resolve_root(ctx, root), adr_id=adr, apply=apply)
+    res = mutate.reconcile_related(root, adr_id=adr, apply=apply)
     return format_mutation(res, "Reconcile Related Links", "Derive frontmatter `related` fields from body references.")
 
 
 @mcp.tool
-async def remediate_dark_nodes(ctx: Context, dry_run: bool = True, root: str = "") -> str:
+async def remediate_dark_nodes(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Find plain-text ADR references in markdown bodies and convert them to wikilinks. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
-    res = await mutate.remediate_dark_nodes(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
+    res = await mutate.remediate_dark_nodes(root, ctx=ctx, dry_run=dry_run)
     return format_mutation(res, "Remediate Dark Nodes", "Convert plaintext references to wikilinks.")
 
 
 @mcp.tool
-async def remediate_drift(ctx: Context, dry_run: bool = True, root: str = "") -> str:
+async def remediate_drift(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Find nodes where frontmatter typed edges exist but are missing from body links (drift),
     and append them to the body as wikilinks. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
-    res = await mutate.remediate_drift(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
+    res = await mutate.remediate_drift(root, ctx=ctx, dry_run=dry_run)
     return format_mutation(res, "Remediate Drift", "Append missing body links from frontmatter definitions.")
 
 
 @mcp.tool
-async def remediate_dead_links(ctx: Context, dry_run: bool = True, root: str = "") -> str:
+async def remediate_dead_links(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Find and remove references to non-existent ADRs from both frontmatter and body. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
-    res = await mutate.remediate_dead_links(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
+    res = await mutate.remediate_dead_links(root, ctx=ctx, dry_run=dry_run)
     return format_mutation(res, "Remediate Dead Links", "Remove references to non-existent ADRs from metadata and content.")
 
 
 @mcp.tool(name="list")
-async def list_tool(ctx: Context, status: str = "", tag: str = "", limit: int = 100, offset: int = 0, root: str = "") -> str:
+async def list_tool(status: str = "", tag: str = "", limit: int = 100, offset: int = 0, g: Graph = Depends(get_graph)) -> ToolResult:
     """List all ADRs, optionally filtered by status and/or tag. Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     adrs = g.list_adrs(status=status, tag=tag, limit=limit, offset=offset)
     adrs_data = [
         {
@@ -253,9 +262,8 @@ async def list_tool(ctx: Context, status: str = "", tag: str = "", limit: int = 
 
 
 @mcp.tool
-async def search(ctx: Context, query: str, status: str = "", limit: int = 100, offset: int = 0, root: str = "") -> str:
+async def search(query: str, status: str = "", limit: int = 100, offset: int = 0, g: Graph = Depends(get_graph)) -> ToolResult:
     """Search for ADRs by title substring match, optionally filtered by status. Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     adrs = g.search_adrs(query, status=status, limit=limit, offset=offset)
     adrs_data = [
         {
@@ -274,31 +282,29 @@ async def search(ctx: Context, query: str, status: str = "", limit: int = 100, o
 
 
 @mcp.tool
-async def path(ctx: Context, from_adr: str, to_adr: str, root: str = "") -> str:
+async def path(from_adr: str, to_adr: str, g: Graph = Depends(get_graph)) -> ToolResult:
     """Find the BFS shortest path between two ADRs. Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     res = g.find_path(from_adr, to_adr)
     return format_path(res, from_adr, to_adr)
 
 
 @mcp.tool
-async def set_status(ctx: Context, adr: str, status: str, root: str = "") -> str:
+async def set_status(adr: str, status: str, root: Path = Depends(get_root)) -> ToolResult:
     """Update the status of a single ADR. Returns self-navigable Markdown containing JSON-LD."""
-    res = mutate.set_status(await async_resolve_root(ctx, root), adr, status)
+    res = mutate.set_status(root, adr, status)
     return format_mutation(res, "Set ADR Status", f"Update status of {adr} to {status}.")
 
 
 @mcp.tool
-async def rename(ctx: Context, old: str, new: str, dry_run: bool = True, root: str = "") -> str:
+async def rename(old: str, new: str, dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Rename/renumber an ADR and cascade updates to all files referencing it. Returns self-navigable Markdown containing JSON-LD."""
-    res = mutate.rename(await async_resolve_root(ctx, root), old, new, dry_run=dry_run)
+    res = mutate.rename(root, old, new, dry_run=dry_run)
     return format_mutation(res, "Rename ADR", f"Rename/renumber ADR {old} to {new}.")
 
 
 @mcp.tool
-async def drift(ctx: Context, root: str = "") -> str:
+async def drift(g: Graph = Depends(get_graph)) -> ToolResult:
     """Nodes where frontmatter typed edges and body links disagree. Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     res = g.drift()
     drift_data = [
         {"adr": a, "in_yaml_not_body": f, "in_body_not_yaml": b}
@@ -308,25 +314,24 @@ async def drift(ctx: Context, root: str = "") -> str:
 
 
 @mcp.tool
-async def blast_radius(ctx: Context, adr: str, root: str = "") -> str:
+async def blast_radius(adr: str, g: Graph = Depends(get_graph)) -> ToolResult:
     """Find downstream ADRs that transitively depend on this ADR. Returns self-navigable Markdown containing JSON-LD."""
-    g = await _graph(ctx, root)
     res = g.blast_radius(adr)
     return format_blast_radius(res)
 
 
 @mcp.tool
-async def propose_adr(ctx: Context, title: str, status: str = "proposed", context: str = "", tags: list[str] | None = None, root: str = "") -> str:
+async def propose_adr(title: str, status: str = "proposed", context: str = "", tags: list[str] | None = None, root: Path = Depends(get_root)) -> ToolResult:
     """Scaffold a new ADR file in the corpus with the next available ID. Returns self-navigable Markdown containing JSON-LD."""
-    res = mutate.propose(await async_resolve_root(ctx, root), title, status, context, tags)
+    res = mutate.propose(root, title, status, context, tags)
     return format_mutation(res, "Propose ADR", f"Scaffold new ADR titled '{title}'.")
 
 
 @mcp.tool
-async def migrate_okf(ctx: Context, dry_run: bool = True, root: str = "") -> str:
+async def migrate_okf(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Migrate the ADR corpus to OKF v0.1 conformance. Ensures type fields, converts
     date→timestamp, synthesizes descriptions, generates index.md. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
-    res = await mutate.migrate_okf(await async_resolve_root(ctx, root), ctx=ctx, dry_run=dry_run)
+    res = await mutate.migrate_okf(root, ctx=ctx, dry_run=dry_run)
     return format_mutation(res, "Migrate OKF Conformance", "Migrate corpus to OKF v0.1 specification.")
 
 
@@ -341,9 +346,8 @@ async def adr_resource(adr_id: str) -> str:
 
 
 @mcp.tool
-async def read(ctx: Context, adr: str, root: str = "") -> str:
+async def read(adr: str, g: Graph = Depends(get_graph)) -> ToolResult:
     """Read the structured metadata, content, and navigation options for an ADR, returned as Markdown."""
-    g = await _graph(ctx, root)
     a = canonify(adr)
     if a not in g.adrs:
         raise ValueError(f"ADR {a} not found")
@@ -395,10 +399,14 @@ async def read(ctx: Context, adr: str, root: str = "") -> str:
 
 
 
+
+
+
 @mcp.tool
-async def hover_context(ctx: Context, file_path: str, root: str = "") -> str:
+async def hover_context(ctx: Context = CurrentContext(), file_path: str = "", root: str = "", g: Graph = Depends(get_graph)) -> str:
     """Get architectural context for a file path (for IDE hover tooltips)."""
-    g = await _graph(ctx, root)
+    if root:
+        g = await _graph(ctx, root)
     adrs = g.get_governing_adrs(file_path)
     if not adrs:
         return "No architectural decisions explicitly govern this path."
@@ -412,9 +420,8 @@ async def hover_context(ctx: Context, file_path: str, root: str = "") -> str:
 
 
 @mcp.prompt()
-async def draft_adr(ctx: Context, topic: str) -> str:
+async def draft_adr(topic: str, g: Graph = Depends(get_graph)) -> str:
     """Prompt for an LLM to draft a new Architecture Decision Record based on a topic."""
-    g = await _graph(ctx, None)
     adrs = g.list_adrs()
     recent = sorted(adrs, key=lambda a: a.num, reverse=True)[:3]
     recent_titles = "\n".join(f"- {a.id}: {a.title}" for a in recent)
@@ -427,7 +434,7 @@ Required YAML frontmatter fields:
 - title: "{topic}"
 - status: proposed
 - timestamp: (current time in ISO 8601)
-
+ 
 The body should contain the following sections:
 ## Context and Problem Statement
 ## Decision Drivers
@@ -441,9 +448,8 @@ Please provide the complete markdown text including the YAML frontmatter.
 """
 
 @mcp.prompt()
-async def review_adr(ctx: Context, adr_id: str) -> str:
+async def review_adr(adr_id: str, g: Graph = Depends(get_graph)) -> str:
     """Prompt for an LLM to review an existing Architecture Decision Record."""
-    g = await _graph(ctx, None)
     from .graph import canonify
     a = canonify(adr_id)
     if a not in g.adrs:
