@@ -22,7 +22,7 @@ import yaml
 
 _NUM = re.compile(r"ADR-0*(\d+)", re.I)
 _FILENUM = re.compile(r"^0*(\d+)\b")
-_WIKI = re.compile(r"\[\[([^\]]+)\]\]")
+_WIKI = re.compile(r"\[\[([^\[\]]+)\]\]")
 _MDLINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _FM_SPLIT = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.S)
 

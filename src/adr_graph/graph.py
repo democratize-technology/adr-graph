@@ -211,7 +211,10 @@ class Graph:
                     
                 if intended_id:
                     target_adr = self.adrs[intended_id]
-                    if text_to_check == target_adr.path.stem or text_to_check in target_adr.aliases:
+                    clean_text = text_to_check.split("/")[-1]
+                    if (clean_text == target_adr.path.stem or 
+                        clean_text == target_adr.path.name or 
+                        text_to_check in target_adr.aliases):
                         resolved_in_obsidian = True
                         
                 if not resolved_in_obsidian:
@@ -219,7 +222,7 @@ class Graph:
                         dark.append((nid, raw, alias_map[text_to_check]))
                     elif intended_id:
                         dark.append((nid, raw, intended_id))
-                    else:
+                    elif "adr" in raw.lower():
                         dark.append((nid, raw, "unresolved"))
             
             # Check unlinked_refs (plain text mentions)
