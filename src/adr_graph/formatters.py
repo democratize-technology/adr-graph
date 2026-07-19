@@ -1,10 +1,16 @@
-"""Formatters to convert raw ADR tool outputs into JSON-LD embedded Markdown."""
+"""Formatters to convert raw ADR tool outputs into JSON-LD embedded Markdown + Prefab rich UI."""
 
 from __future__ import annotations
 
 from typing import Any
 from .markdown_ld_renderer import render_response
 from fastmcp.tools.base import ToolResult
+
+from prefab_ui.app import PrefabApp
+import prefab_ui.components as c
+from prefab_ui.actions.mcp import CallTool, SendMessage
+from prefab_ui.actions import SetState, ShowToast
+from prefab_ui.rx import Rx, RESULT
 
 def format_validate(res: dict[str, Any]) -> ToolResult:
     status_emoji = "✅" if res["ok"] else "❌"
@@ -61,13 +67,104 @@ def format_validate(res: dict[str, Any]) -> ToolResult:
         {"label": "Run OKF conformance", "uri": "mcp://adr-graph/okf_conformance", "description": "View OKF standards report"},
     ]
     
+    # UI Component Dashboard
+    broken_links = res["defects"].get("broken_dead_links", []) or []
+    rec_breaks = res["defects"].get("reciprocity_breaks", []) or []
+    okf_viols = res["defects"].get("okf_violations", []) or []
+    orphans = res["defects"].get("orphan_suspects", []) or []
+    dark_nodes = res["defects"].get("dark_nodes", []) or []
+    cross_bleeds = res["defects"].get("cross_repo_bleeds", []) or []
+    
+    total_defects = len(broken_links) + len(rec_breaks) + len(okf_viols) + len(orphans) + len(dark_nodes) + len(cross_bleeds)
+    
+    with PrefabApp(title="ADR Validation Dashboard") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading("ADR Graph Validation", level=2)
+            with c.Row(gap=4):
+                c.Metric(label="Total ADRs", value=str(res["meta"]["adrs"]))
+                c.Metric(label="Total Edges", value=str(res["meta"]["edges"]))
+                c.Metric(label="Connected Nodes", value=str(res["meta"]["connected"]))
+            with c.Row(gap=4):
+                c.Metric(label="Intentional Frontier", value=str(res["meta"]["intentional_frontier"]))
+                c.Metric(label="Completeness", value=f"{res['meta']['completeness_pct']}%")
+                c.Metric(label="Active Defects", value=str(total_defects), variant="error" if total_defects > 0 else "success")
+            
+            c.Separator()
+            
+            if total_defects > 0:
+                c.Heading("⚠️ Active Defects", level=3)
+                with c.Tabs(default_value="broken" if broken_links else "okf"):
+                    if broken_links:
+                        with c.Tab(value="broken", title=f"Broken Links ({len(broken_links)})"):
+                            c.DataTable(
+                                columns=[
+                                    c.DataTableColumn(key="from", header="From ADR", sortable=True),
+                                    c.DataTableColumn(key="to", header="Unresolved Ref", sortable=True),
+                                    c.DataTableColumn(key="action", header="Actions"),
+                                ],
+                                rows=[
+                                    {
+                                        "from": b["from"],
+                                        "to": b["to"],
+                                        "action": c.Button("Fix", on_click=CallTool("remediate_dead_links", arguments={"dry_run": False}))
+                                    } for b in broken_links
+                                ]
+                            )
+                    if okf_viols:
+                        with c.Tab(value="okf", title=f"OKF Violations ({len(okf_viols)})"):
+                            c.DataTable(
+                                columns=[
+                                    c.DataTableColumn(key="adr", header="ADR", sortable=True),
+                                    c.DataTableColumn(key="detail", header="Violation Details"),
+                                ],
+                                rows=okf_viols
+                            )
+                    if rec_breaks:
+                        with c.Tab(value="reciprocity", title=f"Reciprocity ({len(rec_breaks)})"):
+                            c.DataTable(
+                                columns=[
+                                    c.DataTableColumn(key="a", header="ADR A", sortable=True),
+                                    c.DataTableColumn(key="b", header="ADR B", sortable=True),
+                                    c.DataTableColumn(key="detail", header="Detail"),
+                                ],
+                                rows=rec_breaks
+                            )
+                    if orphans:
+                        with c.Tab(value="orphans", title=f"Orphans ({len(orphans)})"):
+                            c.DataTable(
+                                columns=[
+                                    c.DataTableColumn(key="adr", header="Orphan ADR", sortable=True),
+                                ],
+                                rows=[{"adr": o} for o in orphans]
+                            )
+                    if dark_nodes:
+                        with c.Tab(value="dark_nodes", title=f"Dark Nodes ({len(dark_nodes)})"):
+                            c.DataTable(
+                                columns=[
+                                    c.DataTableColumn(key="adr", header="ADR", sortable=True),
+                                    c.DataTableColumn(key="raw_ref", header="Raw Reference"),
+                                    c.DataTableColumn(key="intended_id", header="Intended ID"),
+                                ],
+                                rows=dark_nodes
+                            )
+            else:
+                with c.Card(css_class="bg-emerald-50 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-800"):
+                    with c.CardContent():
+                        c.Text("🎉 ADR graph has no defects! Everything is clean.", css_class="text-emerald-800 dark:text-emerald-200")
+            
+            with c.Row(gap=2):
+                c.Button("Revalidate", on_click=CallTool("validate"))
+                c.Button("Remediate Drift", on_click=CallTool("remediate_drift", arguments={"dry_run": False}))
+                c.Button("Remediate Dead Links", on_click=CallTool("remediate_dead_links", arguments={"dry_run": False}))
+                
     return render_response(
         title="ADR Graph Validation Report",
         description="Full topology validation report analyzing structural health and OKF compliance.",
         json_ld_type="ValidationReport",
         json_ld_data=res,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_okf_conformance(res: dict[str, Any]) -> ToolResult:
@@ -96,13 +193,68 @@ def format_okf_conformance(res: dict[str, Any]) -> ToolResult:
         {"label": "Run full validation", "uri": "mcp://adr-graph/validate", "description": "Run the full graph validation report"},
     ]
     
+    # UI Component Conformance
+    violations = res.get("violations", []) or []
+    warnings = res.get("warnings", []) or []
+    coverage = res.get("coverage", {}) or {}
+    
+    with PrefabApp(title="OKF Conformance Report") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading("OKF Conformance Report", level=2)
+            c.Metric(
+                label="Conformance Score", 
+                value=f"{res['conformance_pct']}%", 
+                variant="success" if res["conformant"] else "warning"
+            )
+            
+            c.Separator()
+            
+            c.Heading("📊 Field Coverage", level=3)
+            c.DataTable(
+                columns=[
+                    c.DataTableColumn(key="field", header="Field Name"),
+                    c.DataTableColumn(key="pct", header="Coverage"),
+                ],
+                rows=[{"field": k, "pct": v} for k, v in coverage.items()]
+            )
+            
+            if violations or warnings:
+                with c.Tabs(default_value="violations" if violations else "warnings"):
+                    if violations:
+                        with c.Tab(value="violations", title=f"Violations ({len(violations)})"):
+                            c.DataTable(
+                                columns=[
+                                    c.DataTableColumn(key="adr", header="ADR", sortable=True),
+                                    c.DataTableColumn(key="detail", header="Violation Details"),
+                                ],
+                                rows=violations
+                            )
+                    if warnings:
+                        with c.Tab(value="warnings", title=f"Warnings ({len(warnings)})"):
+                            c.DataTable(
+                                columns=[
+                                    c.DataTableColumn(key="adr", header="ADR", sortable=True),
+                                    c.DataTableColumn(key="detail", header="Warning Details"),
+                                ],
+                                rows=warnings
+                            )
+            else:
+                with c.Card(css_class="bg-emerald-50 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-800"):
+                    with c.CardContent():
+                        c.Text("🎉 Perfect OKF conformance! No violations or warnings found.", css_class="text-emerald-800 dark:text-emerald-200")
+            
+            with c.Row(gap=2):
+                c.Button("Recheck Conformance", on_click=CallTool("okf_conformance"))
+                c.Button("Migrate to OKF (Apply)", on_click=CallTool("migrate_okf", arguments={"dry_run": False}))
+                
     return render_response(
         title="OKF v0.1 Conformance Report",
         description="Detailed review of ADR metadata adherence to the Open Knowledge Format v0.1 specification.",
         json_ld_type="ConformanceReport",
         json_ld_data=res,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_singletons(res: dict[str, Any]) -> ToolResult:
@@ -127,13 +279,53 @@ def format_singletons(res: dict[str, Any]) -> ToolResult:
     if suspect:
         nav.append({"label": f"Read first suspect ({suspect[0]})", "uri": f"mcp://adr-graph/read?adr={suspect[0]}"})
         
+    # UI Component Singletons
+    with PrefabApp(title="Orphans & Singletons") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading("Orphans & Singletons Analysis", level=2)
+            
+            with c.Tabs(default_value="suspect" if suspect else "intentional"):
+                with c.Tab(value="suspect", title=f"Orphan Suspects ({len(suspect)})"):
+                    if suspect:
+                        c.DataTable(
+                            columns=[
+                                c.DataTableColumn(key="adr", header="Orphan ADR ID", sortable=True),
+                                c.DataTableColumn(key="action", header="Actions"),
+                            ],
+                            rows=[
+                                {
+                                    "adr": s,
+                                    "action": c.Button("Read", on_click=CallTool("read", arguments={"adr": s}))
+                                } for s in suspect
+                            ]
+                        )
+                    else:
+                        c.Text("No suspicious orphans. All disconnected nodes are intentionally marked as standalone/seed.")
+                with c.Tab(value="intentional", title=f"Intentional Frontier ({len(intentional)})"):
+                    if intentional:
+                        c.DataTable(
+                            columns=[
+                                c.DataTableColumn(key="adr", header="Frontier ADR ID", sortable=True),
+                                c.DataTableColumn(key="action", header="Actions"),
+                            ],
+                            rows=[
+                                {
+                                    "adr": i,
+                                    "action": c.Button("Read", on_click=CallTool("read", arguments={"adr": i}))
+                                } for i in intentional
+                            ]
+                        )
+                    else:
+                        c.Text("No intentional frontiers.")
+                        
     return render_response(
         title="Orphans & Singletons Analysis",
         description="Report identifying disconnected nodes split into intentional standalone vs suspicious orphans.",
         json_ld_type="ItemList",
         json_ld_data=res,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_dead_links(res: dict[str, Any]) -> ToolResult:
@@ -159,13 +351,50 @@ def format_dead_links(res: dict[str, Any]) -> ToolResult:
         nav.append({"label": "Remediate Dead Links (Dry Run)", "uri": "mcp://adr-graph/remediate_dead_links?dry_run=true"})
         nav.append({"label": "Remediate Dead Links (APPLY)", "uri": "mcp://adr-graph/remediate_dead_links?dry_run=false"})
         
+    # UI Component Dead Links
+    with PrefabApp(title="Dead Link Analysis") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading("Dead Link Analysis", level=2)
+            
+            with c.Tabs(default_value="broken" if broken else "planned"):
+                with c.Tab(value="broken", title=f"Broken Dead Links ({len(broken)})"):
+                    if broken:
+                        c.DataTable(
+                            columns=[
+                                c.DataTableColumn(key="from", header="Source ADR", sortable=True),
+                                c.DataTableColumn(key="to", header="Missing Target", sortable=True),
+                                c.DataTableColumn(key="action", header="Actions"),
+                            ],
+                            rows=[
+                                {
+                                    "from": b["from"],
+                                    "to": b["to"],
+                                    "action": c.Button("Remediate", on_click=CallTool("remediate_dead_links", arguments={"dry_run": False}))
+                                } for b in broken
+                            ]
+                        )
+                    else:
+                        c.Text("No broken dead links found!")
+                with c.Tab(value="planned", title=f"Planned Forward Refs ({len(planned)})"):
+                    if planned:
+                        c.DataTable(
+                            columns=[
+                                c.DataTableColumn(key="from", header="Source ADR", sortable=True),
+                                c.DataTableColumn(key="to", header="Planned Target", sortable=True),
+                            ],
+                            rows=planned
+                        )
+                    else:
+                        c.Text("No planned forward references.")
+                        
     return render_response(
         title="Dead Link Analysis",
         description="Report on broken links and planned forward references within the graph.",
         json_ld_type="ItemList",
         json_ld_data=res,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_reciprocity(res: dict[str, Any]) -> ToolResult:
@@ -179,12 +408,32 @@ def format_reciprocity(res: dict[str, Any]) -> ToolResult:
     else:
         md += "#### ✅ All Relationship Edges are Reciprocal\n"
         
+    # UI Component Reciprocity
+    with PrefabApp(title="Reciprocity Checker") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading("Reciprocity Checker", level=2)
+            
+            if breaks:
+                c.DataTable(
+                    columns=[
+                        c.DataTableColumn(key="a", header="ADR A", sortable=True),
+                        c.DataTableColumn(key="b", header="ADR B", sortable=True),
+                        c.DataTableColumn(key="detail", header="Detail"),
+                    ],
+                    rows=breaks
+                )
+            else:
+                with c.Card(css_class="bg-emerald-50 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-800"):
+                    with c.CardContent():
+                        c.Text("🎉 All relationships are reciprocal (every supersedes edge has a matching superseded_by).", css_class="text-emerald-800 dark:text-emerald-200")
+                        
     return render_response(
         title="Reciprocity Check",
         description="Verifies that superseded and supersedes relationships are properly mirrored on both nodes.",
         json_ld_type="ItemList",
         json_ld_data=res,
         markdown_body=md,
+        structured_content=app
     )
 
 def format_neighbors(res: dict[str, Any]) -> ToolResult:
@@ -215,13 +464,71 @@ def format_neighbors(res: dict[str, Any]) -> ToolResult:
     for x in outbound + inbound:
         nav.append({"label": f"Read neighboring {x}", "uri": f"mcp://adr-graph/read?adr={x}"})
         
+    # UI Neighborhood Mermaid diagram + stats
+    mermaid_lines = ["graph LR"]
+    mermaid_lines.append(f'  style {adr} fill:#f59e0b,stroke:#d97706,stroke-width:4px')
+    mermaid_lines.append(f'  {adr}["{adr}: {title[:20]}..."]')
+    
+    for node in outbound:
+        mermaid_lines.append(f'  {node}["{node}"]')
+        mermaid_lines.append(f'  {adr} --> {node}')
+        
+    for node in inbound:
+        mermaid_lines.append(f'  {node}["{node}"]')
+        mermaid_lines.append(f'  {node} --> {adr}')
+        
+    mermaid_chart = "\n".join(mermaid_lines)
+    
+    with PrefabApp(title=f"Neighbors of {adr}") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading(f"Neighbors for {adr}", level=2)
+            c.Text(f"**Title:** {title}", css_class="text-lg font-medium")
+            
+            c.Separator()
+            
+            c.Heading("Local Neighborhood Map", level=3)
+            c.Mermaid(chart=mermaid_chart)
+            
+            c.Separator()
+            
+            with c.Tabs(default_value="outbound"):
+                with c.Tab(value="outbound", title=f"Outbound References ({len(outbound)})"):
+                    if outbound:
+                        c.DataTable(
+                            columns=[
+                                c.DataTableColumn(key="adr", header="Target ADR", sortable=True),
+                                c.DataTableColumn(key="action", header="Actions"),
+                            ],
+                            rows=[
+                                {"adr": x, "action": c.Button("Read", on_click=CallTool("read", arguments={"adr": x}))}
+                                for x in outbound
+                            ]
+                        )
+                    else:
+                        c.Text("No outbound references from this ADR.")
+                with c.Tab(value="inbound", title=f"Inbound References ({len(inbound)})"):
+                    if inbound:
+                        c.DataTable(
+                            columns=[
+                                c.DataTableColumn(key="adr", header="Source ADR", sortable=True),
+                                c.DataTableColumn(key="action", header="Actions"),
+                            ],
+                            rows=[
+                                {"adr": x, "action": c.Button("Read", on_click=CallTool("read", arguments={"adr": x}))}
+                                for x in inbound
+                            ]
+                        )
+                    else:
+                        c.Text("No inbound references to this ADR.")
+                        
     return render_response(
         title=f"Neighbors of {adr}",
         description=f"Adjacency list neighborhood for {adr} up to depth {depth}.",
         json_ld_type="AdjacencyGraph",
         json_ld_data=res,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_read(adr_data: dict[str, Any], nav_section: str) -> ToolResult:
@@ -247,18 +554,86 @@ def format_read(adr_data: dict[str, Any], nav_section: str) -> ToolResult:
 """
     
     nav = []
-    # If there are related references, suggest reading them
     for ref in adr_data.get("metadata", {}).get("related", []):
         ref_id = f"ADR-{ref}" if str(ref).isdigit() else str(ref)
         nav.append({"label": f"Read Related {ref_id}", "uri": f"mcp://adr-graph/read?adr={ref_id}"})
         
+    # UI Component Read ADR
+    adr_id = adr_data["id"]
+    title = adr_data["title"]
+    status = adr_data["status"]
+    tags = adr_data["tags"] or []
+    body = adr_data["body"]
+    
+    metadata = adr_data.get("metadata", {}) or {}
+    supersedes = metadata.get("supersedes", []) or []
+    superseded_by = metadata.get("superseded_by", []) or []
+    related = metadata.get("related", []) or []
+    
+    status_variant = "secondary"
+    if status == "accepted":
+        status_variant = "success"
+    elif status in ("deprecated", "superseded"):
+        status_variant = "destructive"
+    elif status == "proposed":
+        status_variant = "warning"
+        
+    with PrefabApp(title=f"Read {adr_id}") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            with c.Row(gap=4, align="center"):
+                c.Heading(f"{adr_id}: {title}", level=2)
+                c.Badge(status, variant=status_variant)
+                
+            with c.Row(gap=2):
+                c.Text(f"Date: {adr_data['timestamp']}", css_class="text-sm text-muted-foreground")
+                c.Text(f"Tags: {', '.join(tags) or 'None'}", css_class="text-sm text-muted-foreground")
+            
+            c.Separator()
+            
+            with c.Row(gap=6):
+                with c.Column(gap=4, css_class="w-2/3"):
+                    c.Heading("📖 Decision Record Content", level=3)
+                    c.Markdown(content=body)
+                    
+                with c.Column(gap=4, css_class="w-1/3"):
+                    c.Heading("🧭 Navigation & Actions", level=3)
+                    
+                    with c.Card():
+                        with c.CardHeader():
+                            c.CardTitle("Lifecycle Actions")
+                        with c.CardContent():
+                            with c.Row(gap=2):
+                                c.Button("Accept", on_click=CallTool("set_status", arguments={"adr": adr_id, "status": "accepted"}))
+                                c.Button("Deprecate", on_click=CallTool("set_status", arguments={"adr": adr_id, "status": "deprecated"}))
+                                
+                    if supersedes or superseded_by or related:
+                        with c.Card():
+                            with c.CardHeader():
+                                c.CardTitle("Relations")
+                            with c.CardContent():
+                                with c.Column(gap=2):
+                                    for s in supersedes:
+                                        sid = f"ADR-{s}" if str(s).isdigit() else str(s)
+                                        c.Button(f"Supersedes {sid}", on_click=CallTool("read", arguments={"adr": sid}))
+                                    for s in superseded_by:
+                                        sid = f"ADR-{s}" if str(s).isdigit() else str(s)
+                                        c.Button(f"Superseded By {sid}", on_click=CallTool("read", arguments={"adr": sid}))
+                                    for r in related:
+                                        rid = f"ADR-{r}" if str(r).isdigit() else str(r)
+                                        c.Button(f"Related {rid}", on_click=CallTool("read", arguments={"adr": rid}))
+                    
+                    with c.Row(gap=2):
+                        c.Button("Neighborhood Map", on_click=CallTool("neighbors", arguments={"adr": adr_id}))
+                        c.Button("Blast Radius", on_click=CallTool("blast_radius", arguments={"adr": adr_id}))
+                        
     return render_response(
         title=f"{adr_data['id']}: {adr_data['title']}",
         description="Architectural Decision Record details and relationships.",
         json_ld_type="TechArticle",
         json_ld_data=adr_data,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_list(adrs: list[dict[str, Any]], query_info: str = "") -> ToolResult:
@@ -276,13 +651,51 @@ def format_list(adrs: list[dict[str, Any]], query_info: str = "") -> ToolResult:
         first_id = adrs[0]['id']
         nav.append({"label": f"Read {first_id}", "uri": f"mcp://adr-graph/read?adr={first_id}"})
         
+    # UI Component List
+    with PrefabApp(title="ADR Directory") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading("ADR Directory", level=2)
+            if query_info:
+                c.Text(f"Filters: {query_info}", css_class="text-muted-foreground mb-2")
+                
+            c.DataTable(
+                columns=[
+                    c.DataTableColumn(key="id", header="ID", sortable=True),
+                    c.DataTableColumn(key="title", header="Title", sortable=True),
+                    c.DataTableColumn(key="status", header="Status", sortable=True),
+                    c.DataTableColumn(key="timestamp", header="Date", sortable=True),
+                    c.DataTableColumn(key="action", header="Actions"),
+                ],
+                rows=[
+                    {
+                        "id": a["id"],
+                        "title": a["title"],
+                        "status": c.Badge(
+                            a["status"], 
+                            variant="success" if a["status"] == "accepted" 
+                            else "warning" if a["status"] == "proposed" 
+                            else "destructive" if a["status"] in ("deprecated", "superseded") 
+                            else "secondary"
+                        ),
+                        "timestamp": a["timestamp"],
+                        "action": c.Button("Read", on_click=CallTool("read", arguments={"adr": a["id"]}))
+                    }
+                    for a in adrs
+                ],
+                search=True
+            )
+            
+            with c.Row(gap=2):
+                c.Button("Propose New ADR", on_click=CallTool("propose_adr"))
+                
     return render_response(
         title="ADR List",
         description="Index list of all architectural decision records in the corpus.",
         json_ld_type="ItemList",
         json_ld_data=adrs,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_search(adrs: list[dict[str, Any]], query: str) -> ToolResult:
@@ -301,13 +714,43 @@ def format_search(adrs: list[dict[str, Any]], query: str) -> ToolResult:
         first_id = adrs[0]['id']
         nav.append({"label": f"Read {first_id}", "uri": f"mcp://adr-graph/read?adr={first_id}"})
         
+    # UI Component Search Results
+    with PrefabApp(title=f"Search: {query}") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading(f"Search Results for '{query}'", level=2)
+            
+            c.DataTable(
+                columns=[
+                    c.DataTableColumn(key="id", header="ID", sortable=True),
+                    c.DataTableColumn(key="title", header="Title", sortable=True),
+                    c.DataTableColumn(key="status", header="Status", sortable=True),
+                    c.DataTableColumn(key="action", header="Actions"),
+                ],
+                rows=[
+                    {
+                        "id": a["id"],
+                        "title": a["title"],
+                        "status": c.Badge(
+                            a["status"], 
+                            variant="success" if a["status"] == "accepted" 
+                            else "warning" if a["status"] == "proposed" 
+                            else "destructive"
+                        ),
+                        "action": c.Button("Read", on_click=CallTool("read", arguments={"adr": a["id"]}))
+                    }
+                    for a in adrs
+                ],
+                search=True
+            )
+            
     return render_response(
         title=f"Search Results for '{query}'",
         description="Filtered list of ADRs matching the search substring.",
         json_ld_type="ItemList",
         json_ld_data=adrs,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_path(res: dict[str, Any], from_adr: str, to_adr: str) -> ToolResult:
@@ -327,13 +770,32 @@ def format_path(res: dict[str, Any], from_adr: str, to_adr: str) -> ToolResult:
         for node in path_nodes:
             nav.append({"label": f"Read {node}", "uri": f"mcp://adr-graph/read?adr={node}"})
             
+    # UI Component Path
+    with PrefabApp(title=f"Path Search: {from_adr} -> {to_adr}") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading(f"Path search from {from_adr} to {to_adr}", level=2)
+            
+            if not path_nodes:
+                with c.Card(css_class="bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800"):
+                    with c.CardContent():
+                        c.Text("❌ No path found between these ADRs in the graph.", css_class="text-red-800 dark:text-red-200")
+            else:
+                c.Heading("✅ Shortest Connection Route Found", level=3)
+                
+                with c.Row(gap=2, align="center"):
+                    for idx, node in enumerate(path_nodes):
+                        if idx > 0:
+                            c.Text("➔", css_class="text-xl text-muted-foreground font-bold")
+                        c.Button(node, on_click=CallTool("read", arguments={"adr": node}))
+                        
     return render_response(
         title="BFS Shortest Path Report",
         description=f"Traversal path between {from_adr} and {to_adr}.",
         json_ld_type="ConnectionPath",
         json_ld_data=res,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_drift(res: list[dict[str, Any]]) -> ToolResult:
@@ -353,13 +815,42 @@ def format_drift(res: list[dict[str, Any]]) -> ToolResult:
         {"label": "Remediate Drift (APPLY)", "uri": "mcp://adr-graph/remediate_drift?dry_run=false"},
     ]
     
+    # UI Component Drift
+    with PrefabApp(title="Drift Analysis") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading("Drift Analysis", level=2)
+            
+            if res:
+                c.DataTable(
+                    columns=[
+                        c.DataTableColumn(key="adr", header="ADR", sortable=True),
+                        c.DataTableColumn(key="yaml_only", header="Only in YAML"),
+                        c.DataTableColumn(key="body_only", header="Only in Body"),
+                        c.DataTableColumn(key="action", header="Actions"),
+                    ],
+                    rows=[
+                        {
+                            "adr": item["adr"],
+                            "yaml_only": ", ".join(f"`{x}`" for x in item["in_yaml_not_body"]) or "-",
+                            "body_only": ", ".join(f"`{x}`" for x in item["in_body_not_yaml"]) or "-",
+                            "action": c.Button("Sync", on_click=CallTool("remediate_drift", arguments={"dry_run": False}))
+                        }
+                        for item in res
+                    ]
+                )
+            else:
+                with c.Card(css_class="bg-emerald-50 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-800"):
+                    with c.CardContent():
+                        c.Text("🎉 No drift detected! Frontmatter and body links match perfectly.", css_class="text-emerald-800 dark:text-emerald-200")
+                        
     return render_response(
         title="Link-Frontmatter Drift Analysis",
         description="Identifies misalignment between YAML frontmatter references and markdown body links.",
         json_ld_type="ItemList",
         json_ld_data=res,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_blast_radius(res: dict[str, Any]) -> ToolResult:
@@ -381,13 +872,38 @@ def format_blast_radius(res: dict[str, Any]) -> ToolResult:
     if radius:
         nav.append({"label": f"Read first affected ({radius[0]})", "uri": f"mcp://adr-graph/read?adr={radius[0]}"})
         
+    # UI Component Blast Radius
+    with PrefabApp(title=f"Blast Radius: {adr}") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading(f"Blast Radius for {adr}", level=2)
+            c.Metric(label="Affected Downstream ADRs", value=str(count), variant="error" if count > 0 else "success")
+            
+            c.Separator()
+            
+            if radius:
+                c.DataTable(
+                    columns=[
+                        c.DataTableColumn(key="adr", header="Dependent ADR ID", sortable=True),
+                        c.DataTableColumn(key="action", header="Actions"),
+                    ],
+                    rows=[
+                        {"adr": r, "action": c.Button("Read", on_click=CallTool("read", arguments={"adr": r}))}
+                        for r in radius
+                    ]
+                )
+            else:
+                with c.Card(css_class="bg-emerald-50 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-800"):
+                    with c.CardContent():
+                        c.Text("🎉 Changing this decision has no downstream impacts on other records.", css_class="text-emerald-800 dark:text-emerald-200")
+                        
     return render_response(
         title=f"Blast Radius of {adr}",
         description=f"Identifies downstream ADRs that transitively depend on the chosen decision.",
         json_ld_type="BlastRadiusReport",
         json_ld_data=res,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )
 
 def format_mutation(res: dict[str, Any], title: str, description: str) -> ToolResult:
@@ -411,15 +927,15 @@ def format_mutation(res: dict[str, Any], title: str, description: str) -> ToolRe
     if changed:
         md += "**Changes Made:**\n"
         if isinstance(changed, list):
-            for c in changed:
-                md += f"- {c}\n"
+            for c_val in changed:
+                md += f"- {c_val}\n"
         else:
             md += f"- {changed}\n"
             
     if changes:
         md += "**Changes Made:**\n"
-        for c in changes:
-            md += f"- {c}\n"
+        for c_val in changes:
+            md += f"- {c_val}\n"
             
     if applied is not None:
         md += f"**Applied:** `{applied}`\n\n"
@@ -433,11 +949,48 @@ def format_mutation(res: dict[str, Any], title: str, description: str) -> ToolRe
         {"label": "Run Graph Validation", "uri": "mcp://adr-graph/validate", "description": "Validate the graph to verify changes"},
     ]
     
+    # UI Component Mutation
+    with PrefabApp(title=title) as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading(title, level=2)
+            c.Text(description, css_class="text-muted-foreground mb-4")
+            
+            if ok:
+                with c.Card(css_class="bg-emerald-50 border-emerald-200 dark:bg-emerald-950 dark:border-emerald-800"):
+                    with c.CardContent():
+                        c.Text("🎉 Operation succeeded!", css_class="text-emerald-800 dark:text-emerald-200")
+            else:
+                with c.Card(css_class="bg-red-50 border-red-200 dark:bg-red-950 dark:border-red-800"):
+                    with c.CardContent():
+                        c.Text(f"❌ Operation failed. {error or 'Unknown error.'}", css_class="text-red-800 dark:text-red-200")
+            
+            # Map changes list
+            all_changes = []
+            if isinstance(changed, list):
+                all_changes.extend(changed)
+            elif changed:
+                all_changes.append(changed)
+            if changes:
+                all_changes.extend(changes)
+                
+            if all_changes:
+                c.Heading("Changes Applied:", level=3)
+                c.DataTable(
+                    columns=[
+                        c.DataTableColumn(key="change", header="File / Operation"),
+                    ],
+                    rows=[{"change": str(ch)} for ch in all_changes]
+                )
+                
+            with c.Row(gap=2):
+                c.Button("Run Validation", on_click=CallTool("validate"))
+                
     return render_response(
         title=title,
         description=description,
         json_ld_type="UpdateAction",
         json_ld_data=res,
         markdown_body=md,
-        navigation_links=nav
+        navigation_links=nav,
+        structured_content=app
     )

@@ -15,6 +15,7 @@ def render_response(
     json_ld_data: dict[str, Any] | list[Any],
     markdown_body: str,
     navigation_links: list[dict[str, str]] | None = None,
+    structured_content: Any = None,
 ) -> ToolResult:
     """Renders a tool response separating human-readable Markdown from machine-readable JSON-LD.
     
@@ -71,5 +72,6 @@ def render_response(
                     text=json_ld_str
                 )
             )
-        ]
+        ],
+        structured_content=structured_content
     )

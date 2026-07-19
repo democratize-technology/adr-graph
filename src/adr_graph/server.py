@@ -49,7 +49,10 @@ mcp.add_transform(PromptsAsTools(mcp))
 
 class ADRProvider(Provider):
     async def _list_resources(self) -> Sequence[Resource]:
-        g = await _graph(None, None)
+        try:
+            g = await _graph(None, None)
+        except Exception:
+            return []
         resources = []
         for a in g.adrs.values():
             def make_reader(adr_obj=a):
@@ -68,7 +71,10 @@ class ADRProvider(Provider):
         return resources
 
     async def _get_resource(self, uri: str, version: Any = None) -> Resource | None:
-        g = await _graph(None, None)
+        try:
+            g = await _graph(None, None)
+        except Exception:
+            return None
         if uri.startswith("adr://"):
             adr_id = uri[len("adr://"):]
             a = canonify(adr_id)
@@ -133,7 +139,7 @@ async def get_graph(ctx: Context = CurrentContext()) -> Graph:
     return await _graph(ctx, root)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def validate(g: Graph = Depends(get_graph)) -> ToolResult:
     """Full topology report. `ok` is False only on genuine rot (undeclared dead
     links or broken reciprocity) — intentional singletons and planned forward
@@ -142,7 +148,7 @@ async def validate(g: Graph = Depends(get_graph)) -> ToolResult:
     return format_validate(res)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def okf_conformance(g: Graph = Depends(get_graph)) -> ToolResult:
     """OKF v0.1 conformance report: violations (missing required fields),
     warnings (missing recommended fields), and field coverage metrics. Returns self-navigable Markdown containing JSON-LD."""
@@ -150,7 +156,7 @@ async def okf_conformance(g: Graph = Depends(get_graph)) -> ToolResult:
     return format_okf_conformance(res)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def find_singletons(g: Graph = Depends(get_graph)) -> ToolResult:
     """Disconnected nodes, split into intentional frontier vs orphan suspects. Returns self-navigable Markdown containing JSON-LD."""
     intentional, suspect = g.singletons()
@@ -158,7 +164,7 @@ async def find_singletons(g: Graph = Depends(get_graph)) -> ToolResult:
     return format_singletons(res)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def find_dead_links(g: Graph = Depends(get_graph)) -> ToolResult:
     """Unresolved references, split into planned (signal) vs broken (defect). Returns self-navigable Markdown containing JSON-LD."""
     planned, broken = g.dead_links()
@@ -169,7 +175,7 @@ async def find_dead_links(g: Graph = Depends(get_graph)) -> ToolResult:
     return format_dead_links(res)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def check_reciprocity(g: Graph = Depends(get_graph)) -> ToolResult:
     """supersede / superseded_by edges that are not mirrored on the other node. Returns self-navigable Markdown containing JSON-LD."""
     breaks = g.reciprocity_breaks()
@@ -177,19 +183,28 @@ async def check_reciprocity(g: Graph = Depends(get_graph)) -> ToolResult:
     return format_reciprocity(res)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def neighbors(adr: str, depth: int = 1, g: Graph = Depends(get_graph)) -> ToolResult:
     """Authored-link neighbourhood of an ADR — the grounding-context primitive. Returns self-navigable Markdown containing JSON-LD."""
     res = g.neighbors(adr, depth=depth)
     return format_neighbors(res)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def export(fmt: str = "json", g: Graph = Depends(get_graph)) -> Any:
     """Render the graph as 'json', 'mermaid', or 'okf' (bundle summary with typed relationships). Returns self-navigable Markdown containing JSON-LD."""
     res = render(g, fmt)
     if fmt.lower() == "mermaid":
-        return f"```mermaid\n{res}\n```"
+        from prefab_ui.app import PrefabApp
+        from prefab_ui.components import Mermaid, Column, Heading
+        with PrefabApp(title="ADR Graph Visualization") as app:
+            with Column(gap=4, css_class="p-6"):
+                Heading("Architecture Decision Graph Map", level=2)
+                Mermaid(chart=res)
+        return ToolResult(
+            content=f"```mermaid\n{res}\n```",
+            structured_content=app
+        )
     return render_response(
         title=f"Graph Export ({fmt.upper()})",
         description=f"Exported topology in {fmt.upper()} format.",
@@ -199,28 +214,28 @@ async def export(fmt: str = "json", g: Graph = Depends(get_graph)) -> Any:
     )
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def supersede(superseding: str, superseded: str, root: Path = Depends(get_root)) -> ToolResult:
     """Record that one ADR supersedes another, writing BOTH sides of the edge. Returns self-navigable Markdown containing JSON-LD."""
     res = mutate.supersede(root, superseding, superseded)
     return format_mutation(res, "Supersede Edges Updated", f"Record that {superseding} supersedes {superseded}.")
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def reconcile_related(adr: str = "", apply: bool = False, root: Path = Depends(get_root)) -> ToolResult:
     """Derive frontmatter `related` from body links. Dry-run unless apply=True. Returns self-navigable Markdown containing JSON-LD."""
     res = mutate.reconcile_related(root, adr_id=adr, apply=apply)
     return format_mutation(res, "Reconcile Related Links", "Derive frontmatter `related` fields from body references.")
 
 
-@mcp.tool(task=True)
+@mcp.tool(app=True, task=True)
 async def remediate_dark_nodes(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Find plain-text ADR references in markdown bodies and convert them to wikilinks. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
     res = await mutate.remediate_dark_nodes(root, ctx=ctx, dry_run=dry_run)
     return format_mutation(res, "Remediate Dark Nodes", "Convert plaintext references to wikilinks.")
 
 
-@mcp.tool(task=True)
+@mcp.tool(app=True, task=True)
 async def remediate_drift(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Find nodes where frontmatter typed edges exist but are missing from body links (drift),
     and append them to the body as wikilinks. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
@@ -228,14 +243,14 @@ async def remediate_drift(ctx: Context = CurrentContext(), dry_run: bool = True,
     return format_mutation(res, "Remediate Drift", "Append missing body links from frontmatter definitions.")
 
 
-@mcp.tool(task=True)
+@mcp.tool(app=True, task=True)
 async def remediate_dead_links(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Find and remove references to non-existent ADRs from both frontmatter and body. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
     res = await mutate.remediate_dead_links(root, ctx=ctx, dry_run=dry_run)
     return format_mutation(res, "Remediate Dead Links", "Remove references to non-existent ADRs from metadata and content.")
 
 
-@mcp.tool(name="list")
+@mcp.tool(name="list", app=True)
 async def list_tool(status: str = "", tag: str = "", limit: int = 100, offset: int = 0, g: Graph = Depends(get_graph)) -> ToolResult:
     """List all ADRs, optionally filtered by status and/or tag. Returns self-navigable Markdown containing JSON-LD."""
     adrs = g.list_adrs(status=status, tag=tag, limit=limit, offset=offset)
@@ -261,7 +276,7 @@ async def list_tool(status: str = "", tag: str = "", limit: int = 100, offset: i
     return format_list(adrs_data, ", ".join(query_info))
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def search(query: str, status: str = "", limit: int = 100, offset: int = 0, g: Graph = Depends(get_graph)) -> ToolResult:
     """Search for ADRs by title substring match, optionally filtered by status. Returns self-navigable Markdown containing JSON-LD."""
     adrs = g.search_adrs(query, status=status, limit=limit, offset=offset)
@@ -281,14 +296,14 @@ async def search(query: str, status: str = "", limit: int = 100, offset: int = 0
     return format_search(adrs_data, query)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def path(from_adr: str, to_adr: str, g: Graph = Depends(get_graph)) -> ToolResult:
     """Find the BFS shortest path between two ADRs. Returns self-navigable Markdown containing JSON-LD."""
     res = g.find_path(from_adr, to_adr)
     return format_path(res, from_adr, to_adr)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def set_status(adr: str, status: str = "", ctx: Context = CurrentContext(), root: Path = Depends(get_root)) -> ToolResult:
     """Update the status of a single ADR. Returns self-navigable Markdown containing JSON-LD."""
     VALID_STATUSES = ["proposed", "accepted", "rejected", "deprecated", "superseded"]
@@ -310,14 +325,14 @@ async def set_status(adr: str, status: str = "", ctx: Context = CurrentContext()
     return format_mutation(res, "Set ADR Status", f"Update status of {adr} to {status}.")
 
 
-@mcp.tool(task=True)
+@mcp.tool(app=True, task=True)
 async def rename(old: str, new: str, dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Rename/renumber an ADR and cascade updates to all files referencing it. Returns self-navigable Markdown containing JSON-LD."""
     res = mutate.rename(root, old, new, dry_run=dry_run)
     return format_mutation(res, "Rename ADR", f"Rename/renumber ADR {old} to {new}.")
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def drift(g: Graph = Depends(get_graph)) -> ToolResult:
     """Nodes where frontmatter typed edges and body links disagree. Returns self-navigable Markdown containing JSON-LD."""
     res = g.drift()
@@ -328,14 +343,14 @@ async def drift(g: Graph = Depends(get_graph)) -> ToolResult:
     return format_drift(drift_data)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def blast_radius(adr: str, g: Graph = Depends(get_graph)) -> ToolResult:
     """Find downstream ADRs that transitively depend on this ADR. Returns self-navigable Markdown containing JSON-LD."""
     res = g.blast_radius(adr)
     return format_blast_radius(res)
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def propose_adr(
     title: str = "",
     status: str = "proposed",
@@ -376,7 +391,7 @@ async def propose_adr(
     return format_mutation(res, "Propose ADR", f"Scaffold new ADR titled '{title}'.")
 
 
-@mcp.tool(task=True)
+@mcp.tool(app=True, task=True)
 async def migrate_okf(ctx: Context = CurrentContext(), dry_run: bool = True, root: Path = Depends(get_root)) -> ToolResult:
     """Migrate the ADR corpus to OKF v0.1 conformance. Ensures type fields, converts
     date→timestamp, synthesizes descriptions, generates index.md. Dry-run by default. Returns self-navigable Markdown containing JSON-LD."""
@@ -394,7 +409,7 @@ async def adr_resource(adr_id: str) -> str:
     return g.adrs[a].path.read_text(encoding="utf-8", errors="replace")
 
 
-@mcp.tool
+@mcp.tool(app=True)
 async def read(adr: str, g: Graph = Depends(get_graph)) -> ToolResult:
     """Read the structured metadata, content, and navigation options for an ADR, returned as Markdown."""
     a = canonify(adr)
