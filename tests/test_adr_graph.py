@@ -65,9 +65,13 @@ def test_parses_both_link_channels(corpus):
 
 
 def test_singleton_classification(corpus):
+    """ADR-5 (proposed) is an intentional frontier per the README disposition table;
+    ADR-7 (standalone: true) per the marker; ADR-6 (accepted, wired to nothing) is the
+    only orphan suspect. This previously asserted that ADR-5 was a suspect, which
+    certified the SEED_STATUSES=set() defect rather than catching it."""
     intentional, suspect = Graph.build(corpus).singletons()
-    assert set(intentional) == {"ADR-7"}   # standalone
-    assert "ADR-5" in suspect and "ADR-6" in suspect  # proposed + accepted are orphan suspects
+    assert set(intentional) == {"ADR-5", "ADR-7"}   # proposed status + standalone marker
+    assert suspect == ["ADR-6"]                     # accepted but linked to nothing
 
 
 def test_dead_link_disposition(corpus):
@@ -93,7 +97,157 @@ def test_validate_fails_only_on_rot(corpus):
     rep = Graph.build(corpus).report()
     assert rep["ok"] is False                     # broken link + reciprocity exist
     assert rep["meta"]["adrs"] == 8
-    assert len(rep["signals"]["intentional_singletons"]) == 1
+    assert len(rep["signals"]["intentional_singletons"]) == 2   # ADR-5 proposed, ADR-7 standalone
+    assert rep["meta"]["policy_source"] == "defaults"           # no policy node in this corpus
+
+
+# --- subject_scope disposition ------------------------------------------------
+
+SCOPE_FILES = {
+    "010-commit-scoped.md": ("ADR-010", "", ""),
+    "011-per-machine-discharged.md": ("ADR-011", "per-machine", "heartbeat: adr-verify-map-load"),
+    "012-per-machine-undischarged.md": ("ADR-012", "per-machine", ""),
+    "013-named-unverifiable.md": ("ADR-013", "per-machine", "named-unverifiable"),
+    "014-deployment-undischarged.md": ("ADR-014", "deployment", "wishful-thinking"),
+}
+
+
+@pytest.fixture
+def scope_corpus(tmp_path: Path) -> Path:
+    for name, (adr_id, scope, discharge) in SCOPE_FILES.items():
+        extra = ""
+        if scope:
+            extra += f"subject_scope: {scope}\n"
+        if discharge:
+            extra += f"discharged_by: '{discharge}'\n"
+        fm = (
+            f"---\nid: {adr_id}\ntitle: {name}\ntype: adr\n"
+            f"timestamp: 2026-09-06T00:00:00Z\nstatus: accepted\nstandalone: true\n{extra}---\n\n# {adr_id}\n\nBody.\n"
+        )
+        (tmp_path / name).write_text(fm, encoding="utf-8")
+    return tmp_path
+
+
+def test_subject_scope_disposition(scope_corpus):
+    discharged, undischarged = Graph.build(scope_corpus).subject_scopes()
+    assert {r["adr"] for r in discharged} == {"ADR-11", "ADR-13"}
+    assert {r["adr"] for r in undischarged} == {"ADR-12", "ADR-14"}
+    # An undeclared scope defaults to `commit` and is neither signal nor defect.
+    assert "ADR-10" not in {r["adr"] for r in discharged + undischarged}
+
+
+def test_undischarged_scope_is_rot(scope_corpus):
+    rep = Graph.build(scope_corpus).report()
+    assert rep["ok"] is False
+    assert len(rep["defects"]["undischarged_scopes"]) == 2
+    assert len(rep["signals"]["discharged_scopes"]) == 2
+
+
+def test_governing_adrs_provenance_distinguishes_absence_from_no_index(tmp_path: Path):
+    """An empty match and an absent index are different facts. A lookup that cannot
+    tell them apart is how a tool ends up confidently asserting that a file is
+    ungoverned when it simply has no index to answer from."""
+    (tmp_path / "001-no-paths.md").write_text(
+        "---\nid: ADR-001\ntitle: a\ntype: adr\ntimestamp: 2026-09-06\nstatus: accepted\nstandalone: true\n---\n\n# ADR-001\n",
+        encoding="utf-8",
+    )
+    g = Graph.build(tmp_path)
+    res = g.governing_adrs_with_provenance("src/anything.ts")
+    assert res["provenance"] == "no_code_paths_declared"
+    assert res["result"] is None
+    assert res["index_size"] == 0
+
+    (tmp_path / "002-with-paths.md").write_text(
+        "---\nid: ADR-002\ntitle: b\ntype: adr\ntimestamp: 2026-09-06\nstatus: accepted\nstandalone: true\n"
+        "code_paths:\n  - 'src/auth/*'\n---\n\n# ADR-002\n",
+        encoding="utf-8",
+    )
+    g = Graph.build(tmp_path)
+
+    hit = g.governing_adrs_with_provenance("src/auth/token.ts")
+    assert hit["provenance"] == "matched"
+    assert [a.id for a in hit["result"]] == ["ADR-2"]
+    assert hit["matched_via"]["ADR-2"] == "src/auth/*"
+
+    miss = g.governing_adrs_with_provenance("web/unrelated.ts")
+    assert miss["provenance"] == "no_explicit_match"
+    assert miss["result"] is None
+    assert miss["index_size"] == 1
+
+
+def test_fnmatch_star_crosses_slash_is_reported(tmp_path: Path):
+    """`src/*` governs the whole subtree because fnmatch's `*` crosses `/`. That is
+    not changed here — it is DISCLOSED, so an over-broad glob is visible at the call
+    site rather than silently widening a decision's reach."""
+    (tmp_path / "003-broad.md").write_text(
+        "---\nid: ADR-003\ntitle: c\ntype: adr\ntimestamp: 2026-09-06\nstatus: accepted\nstandalone: true\n"
+        "code_paths:\n  - 'src/*'\n---\n\n# ADR-003\n",
+        encoding="utf-8",
+    )
+    res = Graph.build(tmp_path).governing_adrs_with_provenance("src/deep/nested/leaf.ts")
+    assert res["provenance"] == "matched"
+    assert res["matched_via"]["ADR-3"] == "src/*"   # the caller can see WHY it matched
+
+
+def test_sibling_root_refs_are_signal_not_defect(tmp_path: Path):
+    """A corpus is per-repo. A reference resolving in a declared sibling root is a
+    coverage edge, not a dangling link. Without this, one-root validation calls
+    every cross-root reference broken — a validator that cannot say 'outside my
+    root' says 'missing' instead."""
+    root = tmp_path / "platform" / "docs" / "adr"
+    sibling = tmp_path / "infra" / "docs" / "adr"
+    root.mkdir(parents=True)
+    sibling.mkdir(parents=True)
+    (sibling / "1360-alarm-hygiene.md").write_text(
+        "---\nid: ADR-1360\ntitle: alarm\ntype: adr\ntimestamp: 2026-09-06\nstatus: accepted\n---\n\n# ADR-1360\n",
+        encoding="utf-8",
+    )
+    (root / "0000-policy.md").write_text(
+        "---\ntype: policy\ntitle: Policy\ntimestamp: 2026-09-06\nstandalone: true\n"
+        "sibling_roots:\n  - ../../../infra/docs/adr\n---\n\n# Policy\n",
+        encoding="utf-8",
+    )
+    (root / "001-cites-sibling.md").write_text(
+        "---\nid: ADR-001\ntitle: a\ntype: adr\ntimestamp: 2026-09-06\nstatus: accepted\nstandalone: true\n---\n\n"
+        "# ADR-001\n\nAlarm posture per [[ADR-1360]]. Also cites [[ADR-7777]] which exists nowhere.\n",
+        encoding="utf-8",
+    )
+    g = Graph.build(root)
+    assert "ADR-1360" in g.sibling_ids
+    planned, broken = g.dead_links()
+    assert ("ADR-1", "ADR-1360") not in broken          # resolves in the sibling root
+    assert ("ADR-1", "ADR-7777") in broken              # resolves nowhere — still rot
+    assert ("ADR-1", "ADR-1360") in g.cross_root_refs()
+
+    rep = g.report()
+    assert {"from": "ADR-1", "to": "ADR-1360"} in rep["signals"]["cross_root_refs"]
+    assert {"from": "ADR-1", "to": "ADR-1360"} not in rep["defects"]["broken_dead_links"]
+
+
+def test_policy_node_overrides_defaults(tmp_path: Path):
+    (tmp_path / "0000-policy.md").write_text(
+        "---\ntype: policy\ntitle: Policy\ntimestamp: 2026-09-06\nstandalone: true\n"
+        "seed_statuses:\n  - incubating\nseed_tags:\n  - sketch\n"
+        "scopes_requiring_discharge:\n  - per-machine\n---\n\n# Policy\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "001-incubating.md").write_text(
+        "---\nid: ADR-001\ntitle: a\ntype: adr\ntimestamp: 2026-09-06\nstatus: incubating\n---\n\n# ADR-001\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "002-proposed.md").write_text(
+        "---\nid: ADR-002\ntitle: b\ntype: adr\ntimestamp: 2026-09-06\nstatus: proposed\n---\n\n# ADR-002\n",
+        encoding="utf-8",
+    )
+    g = Graph.build(tmp_path)
+    assert g.policy.source == "0000-policy.md"
+    assert g.policy.is_declared is True
+    intentional, suspect = g.singletons()
+    # The node's seed_statuses REPLACE the defaults: incubating is a frontier, proposed is not.
+    assert "ADR-1" in intentional
+    assert "ADR-2" in suspect
+    # A declared policy that omits discharge_forms keeps the documented default.
+    assert "heartbeat" in g.policy.discharge_forms
 
 
 def test_neighbors(corpus):
@@ -243,9 +397,16 @@ def test_hover_context(corpus):
     assert "**[ADR-11] Use LSP**" in ctx
     assert "Status: `accepted`" in ctx
     
-    # Test file that does not match
+    # A match discloses WHICH pattern matched, so an over-broad glob is visible.
+    assert "matched via" in ctx
+
+    # A miss against a PARTIAL index says "not indexed", never "unconstrained".
+    # The old assertion here expected "No architectural decisions explicitly govern
+    # this path." — a confident claim of absence the tool had no standing to make.
     ctx_miss = asyncio.run(hover_context(None, "src/frontend/app.ts", root=str(corpus)))
-    assert "No architectural decisions explicitly govern this path." in ctx_miss
+    assert "No explicit match" in ctx_miss
+    assert "not indexed" in ctx_miss
+    assert "explicitly govern" not in ctx_miss
 
 
 # ---------------------------------------------------------------------------

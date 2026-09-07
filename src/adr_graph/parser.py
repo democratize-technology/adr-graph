@@ -62,6 +62,8 @@ class ADR:
     tags: list[str] = field(default_factory=list)
     resource: str = ""
     paths: list[str] = field(default_factory=list)
+    subject_scope: str = ""    # "" (undeclared, treated as commit) | commit | deployment | per-machine
+    discharged_by: str = ""    # how a non-commit scope is observed; see config.Policy.discharge_forms
     aliases: list[str] = field(default_factory=list)
     raw_refs: set[str] = field(default_factory=set)
     unlinked_refs: set[str] = field(default_factory=set)
@@ -127,6 +129,10 @@ def parse_file(path: Path, log_cb: callable[[str, str], None] | None = None) -> 
     adr.paths = [str(p).strip() for p in (paths if isinstance(paths, list) else [paths])]
     adr.resource = str(meta.get("resource") or "").strip()
     adr.standalone = bool(meta.get("standalone", False))
+    adr.subject_scope = str(meta.get("subject_scope") or "").strip().lower()
+    discharged = meta.get("discharged_by") or ""
+    # `heartbeat: <signal>` is the common form; keep only the form token.
+    adr.discharged_by = str(discharged).strip().split(":", 1)[0].strip().lower()
 
     for key in ("supersedes", "superseded_by", "related"):
         ids: list[str] = []

@@ -34,11 +34,106 @@ dispositioned as either an **intentional frontier** (a decision you'll connect l
 |---|---|---|
 | Singleton | `status: proposed/draft/seed`, `standalone: true`, or a seed tag | `status: accepted` but wired to nothing |
 | Dead link | target listed in the node's `planned:` / `forward_refs:` | undeclared reference to a missing ADR |
+| Subject scope | `subject_scope:` outside the tree **and** `discharged_by:` says how it is observed | `subject_scope:` outside the tree with no declared discharge |
+| Cross-root ref | target resolves in a root listed in `sibling_roots:` | target resolves nowhere |
 
 `validate` returns `ok: false` **only on genuine rot** — undeclared dead links, broken
-reciprocity, or OKF violations (missing `type` field). Intentional singletons and planned
-forward-references are reported under `signals`, never as failures. This is what lets the
-agent "spread out nodes as it works" without the validator fighting unfinished thinking.
+reciprocity, OKF violations (missing `type` field), or undischarged subject scopes.
+Intentional singletons, planned forward-references and discharged scopes are reported under
+`signals`, never as failures. This is what lets the agent "spread out nodes as it works"
+without the validator fighting unfinished thinking.
+
+## Where a claim's subject lives
+
+A dead link is a claim whose *target* cannot be resolved. A decision can also make a claim
+whose *subject* cannot be observed — a control that lives in per-checkout state (a git hook,
+a local daemon) or in a deployed environment. Nothing in a source tree can establish that
+such a control is actually running, so a check that reports green over one is reporting on
+something it cannot see.
+
+Two optional frontmatter keys make that declarable, and therefore dispositionable:
+
+```yaml
+subject_scope: per-machine              # commit (default) | deployment | per-machine
+discharged_by: heartbeat:my-guard-ran   # heartbeat | named-unverifiable
+```
+
+- **`commit`** — the default, and the sound case: the subject is the tree at the SHA. Omit
+  the key entirely and this is what you get. Never a defect.
+- **`per-machine` / `deployment`** — the subject is not in the tree. The node must say how it
+  becomes observable: `heartbeat` (the control emits a liveness signal and its *silence*
+  alarms) or `named-unverifiable` (the blind spot is stated rather than papered over).
+- Declared without a discharge → **defect**. That is a claim with no observable subject, and
+  it is the shape that lets an uninstalled control report green for months.
+
+This is a disposition over a **declared field**. `adr-graph` reads what a node says about its
+own subject; it never parses or evaluates a requirement predicate — that belongs to whatever
+verifier your corpus uses.
+
+## A lookup that cannot say "I don't know" will say something else
+
+`hover_context` resolves a file path to its governing ADRs by matching `code_paths` globs. A
+lookup like that has three possible outcomes, not two, and collapsing them is how a tool ends
+up making a confident false claim:
+
+| provenance | meaning |
+|---|---|
+| `matched` | at least one `code_paths` glob matched this path |
+| `no_explicit_match` | an index exists; this path is not in it — **not indexed**, not *unconstrained* |
+| `no_code_paths_declared` | **no ADR declares `code_paths` at all** — the tool cannot answer, and a non-match carries no information whatsoever |
+
+`Graph.governing_adrs_with_provenance(file_path)` returns
+`{query, provenance, result, matched_via, index_size, corpus_size}`. `result` is `None` rather
+than `[]` when there is no answer, because an empty collection collides with "the answer is
+none". `Graph.get_governing_adrs()` still returns a plain list for callers that only need
+matches — but anything reporting to a human or an agent should use the provenance form.
+
+This is not hypothetical. Run against a 67-ADR corpus in which zero ADRs declared
+`code_paths`, the previous implementation returned *"No architectural decisions explicitly
+govern this path"* for every file in the repository — an assertion of absence from an index
+that did not exist.
+
+**`matched_via` reports which pattern matched.** `code_paths` uses `fnmatch`, where `*`
+crosses `/`: `src/*` governs the entire subtree, and `src/**` behaves identically to `src/*`.
+That behaviour is disclosed rather than silently changed, so an over-broad glob is visible at
+the call site instead of quietly widening a decision's reach. Check the pattern before
+treating a match as intentional.
+
+## Policy lives in the corpus, not in a sidecar
+
+Which statuses count as frontiers, which tags, and which scopes demand a discharge are all
+corpus opinions. They are read from a **policy node**: any top-level markdown file in the root
+whose frontmatter declares `type: policy`.
+
+```yaml
+---
+type: policy
+title: Corpus disposition policy
+seed_statuses: [proposed, draft, seed]
+seed_tags: [standalone, frontier]
+scopes_requiring_discharge: [per-machine, deployment]
+sibling_roots: [../../infrastructure/docs/adr, ../../web/docs/adr]
+---
+```
+
+`sibling_roots` matters more than it looks. **A corpus is per-repo.** A product with several
+repos has several ADR roots, and a decision in one routinely cites a decision in another. Load
+one root without declaring the others and every such reference is reported broken — because a
+validator that cannot say *"outside my root"* says *"missing"* instead.
+
+Measured on a real four-root corpus: **94 reported broken links, 73 distinct targets, all of
+them resolving in a sibling root, none absent anywhere.** Declaring `sibling_roots` moved that
+count to zero and reclassified them as `signals.cross_root_refs`. If your corpus reports
+alarming dead-link numbers, check this before believing them.
+
+A node, not a `.toml` beside the repo — deliberately. A sidecar that goes missing falls back
+to defaults silently, giving you a gate weaker than the one you declared with nothing to
+notice it. A policy node's presence is a function of the tree SHA, so its absence is visible
+to the same tooling that reports dead links, and changing it is a reviewable diff in the
+corpus rather than an untracked config edit. `validate` reports which was used as
+`meta.policy_source` (`"defaults"` when no node is present).
+
+Keys you omit keep their documented defaults; keys you set replace them wholesale.
 
 ## Use as an MCP server
 

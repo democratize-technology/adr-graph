@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 import fnmatch
 from pathlib import Path
 
-from .config import SEED_STATUSES, SEED_TAGS
+from .config import Policy, load_policy, sibling_root_ids
 from .parser import ADR, parse_dir
 
 
@@ -20,6 +20,9 @@ class Graph:
     adrs: dict[str, ADR]
     out: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     inn: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
+    policy: Policy = field(default_factory=Policy)
+    sibling_ids: frozenset[str] = frozenset()
+    _cross_root: list[tuple[str, str]] = field(default_factory=list)
 
     @classmethod
     def build(
@@ -29,7 +32,8 @@ class Graph:
         log_cb: callable[[str, str], None] | None = None,
     ) -> "Graph":
         adrs = parse_dir(root, progress_cb=progress_cb, log_cb=log_cb)
-        g = cls(adrs=adrs)
+        pol = load_policy(root)
+        g = cls(adrs=adrs, policy=pol, sibling_ids=sibling_root_ids(root, pol))
         nodes = set(adrs)
         for nid, adr in adrs.items():
             refs = set(adr.body_refs)
@@ -45,9 +49,36 @@ class Graph:
     def _intentional_singleton(self, adr: ADR) -> bool:
         return (
             adr.standalone
-            or adr.status in SEED_STATUSES
-            or bool(set(adr.tags) & SEED_TAGS)
+            or adr.status in self.policy.seed_statuses
+            or bool(set(adr.tags) & self.policy.seed_tags)
         )
+
+    def subject_scopes(self) -> tuple[list[dict], list[dict]]:
+        """Returns (discharged_signals, undischarged_defects).
+
+        A node declaring a `subject_scope` whose truth does not live in the tree
+        (per policy: per-machine, deployment) must also declare `discharged_by`
+        — how that subject becomes observable. Declared-and-discharged is a
+        signal; declared-without-discharge is a defect, structurally identical
+        to a broken dead link: a claim whose referent cannot be resolved.
+
+        An undeclared scope is treated as `commit`, the sound default, and is
+        neither signal nor defect. This is a disposition over a DECLARED field;
+        it never evaluates a requirement predicate.
+        """
+        discharged: list[dict] = []
+        undischarged: list[dict] = []
+        for nid, adr in self.adrs.items():
+            scope = adr.subject_scope
+            if not scope or scope not in self.policy.scopes_requiring_discharge:
+                continue
+            row = {"adr": nid, "scope": scope, "discharged_by": adr.discharged_by}
+            if adr.discharged_by in self.policy.discharge_forms:
+                discharged.append(row)
+            else:
+                undischarged.append(row)
+        key = lambda r: self._k(r["adr"])  # noqa: E731
+        return sorted(discharged, key=key), sorted(undischarged, key=key)
 
     def singletons(self) -> tuple[list[str], list[str]]:
         """Returns (intentional_frontier, orphan_suspects)."""
@@ -74,9 +105,21 @@ class Graph:
                     continue
                 if r in adr.planned:
                     planned.append((nid, r))
+                elif r in self.sibling_ids:
+                    # Resolves in a declared sibling root. A corpus is per-repo;
+                    # this is a documented coverage edge, not a dangling link.
+                    self._cross_root.append((nid, r))
                 else:
                     broken.append((nid, r))
+        self._cross_root = sorted(set(self._cross_root))
         return sorted(planned), sorted(broken)
+
+    def cross_root_refs(self) -> list[tuple[str, str]]:
+        """References resolving in a declared sibling root (signal, not defect).
+
+        Empty until `dead_links()` has run; `report()` calls it after.
+        """
+        return list(self._cross_root)
 
     def reciprocity_breaks(self) -> list[tuple[str, str, str]]:
         nodes = set(self.adrs)
@@ -269,8 +312,9 @@ class Graph:
         okf_viol = self.okf_violations()
         dark = self.dark_nodes()
         bleeds = self.cross_repo_bleeds()
+        scoped, undischarged = self.subject_scopes()
         connected = sum(1 for nid in self.adrs if self.out[nid] or self.inn[nid])
-        ok = not broken and not recip and not okf_viol and not dark and not bleeds
+        ok = not broken and not recip and not okf_viol and not dark and not bleeds and not undischarged
         return {
             "ok": ok,
             "meta": {
@@ -279,6 +323,7 @@ class Graph:
                 "connected": connected,
                 "completeness_pct": round(100 * connected / n, 1) if n else 0.0,
                 "intentional_frontier": len(intentional) + len(planned),
+                "policy_source": self.policy.source,
             },
             "defects": {
                 "broken_dead_links": [{"from": s, "to": t} for s, t in broken],
@@ -287,10 +332,13 @@ class Graph:
                 "orphan_suspects": suspect,
                 "dark_nodes": [{"adr": a, "raw_ref": r, "intended_id": i} for a, r, i in dark],
                 "cross_repo_bleeds": [{"adr": a, "raw_ref": r} for a, r in bleeds],
+                "undischarged_scopes": undischarged,
             },
             "signals": {
                 "intentional_singletons": intentional,
                 "planned_forward_refs": [{"from": s, "to": t} for s, t in planned],
+                "discharged_scopes": scoped,
+                "cross_root_refs": [{"from": s, "to": t} for s, t in self.cross_root_refs()],
             },
         }
 
@@ -315,14 +363,59 @@ class Graph:
         return sorted_res[offset : offset + limit]
 
     def get_governing_adrs(self, file_path: str) -> list[ADR]:
-        """Find all ADRs whose `code_paths` globs match the given file_path."""
-        matches = []
+        """Find all ADRs whose `code_paths` globs match the given file_path.
+
+        Returns [] for BOTH "nothing governs this path" and "no ADR in this
+        corpus declares code_paths at all". Callers that report to a human or an
+        agent must use `governing_adrs_with_provenance` instead — an empty list
+        is not evidence of absence.
+        """
+        return [m[0] for m in self._match_governing(file_path)]
+
+    def _match_governing(self, file_path: str) -> list[tuple[ADR, str]]:
+        matches: list[tuple[ADR, str]] = []
         for adr in self.adrs.values():
             for pat in adr.paths:
                 if fnmatch.fnmatch(file_path, pat):
-                    matches.append(adr)
+                    matches.append((adr, pat))
                     break
-        return sorted(matches, key=lambda a: self._k(a.id))
+        return sorted(matches, key=lambda m: self._k(m[0].id))
+
+    def governing_adrs_with_provenance(self, file_path: str) -> dict:
+        """Resolve a file path to its governing ADRs, with the provenance of the answer.
+
+        `null` is a first-class provenant result. An empty match and an absent
+        index are different facts, and a lookup that cannot tell them apart is
+        how a confident false statement gets made — "nothing governs this file"
+        asserted by a tool with no index to answer from.
+
+        provenance:
+          "matched"                -> at least one code_paths glob matched
+          "no_explicit_match"      -> an index exists; this path is not in it
+          "no_code_paths_declared" -> NO ADR declares code_paths; the tool
+                                      cannot answer, and absence of a match
+                                      carries no information whatsoever
+        `matched_via` reports the pattern that matched each ADR. Patterns are
+        fnmatch, where `*` crosses `/` — so `src/*` governs the whole subtree.
+        Surfacing the pattern is what makes an over-broad glob visible at the
+        call site instead of silently widening a decision's reach.
+        """
+        declaring = sum(1 for adr in self.adrs.values() if adr.paths)
+        pairs = self._match_governing(file_path)
+        if not declaring:
+            provenance = "no_code_paths_declared"
+        elif pairs:
+            provenance = "matched"
+        else:
+            provenance = "no_explicit_match"
+        return {
+            "query": file_path,
+            "provenance": provenance,
+            "result": [a for a, _ in pairs] or None,
+            "matched_via": {a.id: pat for a, pat in pairs},
+            "index_size": declaring,
+            "corpus_size": len(self.adrs),
+        }
 
     def find_path(self, from_adr: str, to_adr: str) -> dict:
         start = canonify(from_adr)

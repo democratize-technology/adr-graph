@@ -471,15 +471,39 @@ async def hover_context(ctx: Context = CurrentContext(), file_path: str = "", ro
     """Get architectural context for a file path (for IDE hover tooltips)."""
     if root:
         g = await _graph(ctx, root)
-    adrs = g.get_governing_adrs(file_path)
-    if not adrs:
-        return "No architectural decisions explicitly govern this path."
-    
+    res = g.governing_adrs_with_provenance(file_path)
+
+    if res["provenance"] == "no_code_paths_declared":
+        # Never assert absence from an index that does not exist. 0 of N ADRs
+        # declaring code_paths means this tool CANNOT answer the question, which
+        # is a different fact from "nothing governs this file" — and stating the
+        # latter is exactly the confident-false-linkage failure the graph exists
+        # to prevent, made by the tool rather than by the agent.
+        return (
+            f"**Unknown — no index to answer from.** 0 of {res['corpus_size']} ADRs in this "
+            f"corpus declare `code_paths`, so nothing can be said about `{file_path}` either "
+            "way. This is NOT evidence that the path is ungoverned. Populate `code_paths` in "
+            "ADR frontmatter before relying on this tool."
+        )
+
+    if res["provenance"] == "no_explicit_match":
+        return (
+            f"**No explicit match.** `{file_path}` is not covered by any of the `code_paths` "
+            f"globs declared across {res['index_size']} of {res['corpus_size']} ADRs. The index "
+            "is partial, so absence here means 'not indexed', not 'unconstrained'."
+        )
+
     lines = ["**Architectural Context**"]
-    for a in adrs:
-        lines.append(f"- **[{a.id}] {a.title}** (Status: `{a.status}`)")
+    for a in res["result"]:
+        pat = res["matched_via"].get(a.id, "")
+        lines.append(f"- **[{a.id}] {a.title}** (Status: `{a.status}`) — matched via `{pat}`")
         if a.fm.get("superseded_by"):
             lines.append(f"  *Warning: Superseded by {', '.join(a.fm['superseded_by'])}*")
+    lines.append("")
+    lines.append(
+        "_Patterns are fnmatch: `*` crosses `/`, so `src/*` governs the whole subtree. "
+        "Check the matched pattern before treating a match as intentional._"
+    )
     return "\n".join(lines)
 
 

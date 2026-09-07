@@ -51,8 +51,18 @@ def format_validate(res: dict[str, Any]) -> ToolResult:
             md += "\n**Cross-Repo Bleeds:**\n"
             for x in defects["cross_repo_bleeds"]:
                 md += f"- `{x['adr']}`: References `{x['raw_ref']}` external to codebase\n"
-                
+        if defects.get("undischarged_scopes"):
+            md += "\n**Undischarged Subject Scopes:**\n"
+            md += "_A claim whose subject does not live in the tree, with no declared way to observe it._\n"
+            for x in defects["undischarged_scopes"]:
+                got = x.get("discharged_by") or "nothing"
+                md += f"- `{x['adr']}`: `subject_scope: {x['scope']}` but `discharged_by` is {got}\n"
+
     signals = res.get("signals", {})
+    if signals.get("discharged_scopes"):
+        md += "\n#### 🟢 Discharged Subject Scopes\n"
+        for x in signals["discharged_scopes"]:
+            md += f"- `{x['adr']}`: `{x['scope']}` discharged by `{x['discharged_by']}`\n"
     if signals.get("intentional_singletons") or signals.get("planned_forward_refs"):
         md += "\n#### 🟢 Signals (Intentional Incompleteness)\n"
         if signals.get("intentional_singletons"):

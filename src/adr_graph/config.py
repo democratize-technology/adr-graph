@@ -8,10 +8,12 @@ Resolution order:
 
 from __future__ import annotations
 
-import os
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class ADRSettings(BaseSettings):
@@ -28,10 +30,132 @@ def set_global_root(path: str | None) -> None:
 def get_global_root() -> str | None:
     return _GLOBAL_ROOT
 
+# --- Corpus policy ----------------------------------------------------------
+# Defaults match the published README contract. A corpus overrides them with a
+# policy NODE: a markdown file in the root whose frontmatter carries
+# `type: policy`. Deliberately NOT a sidecar outside the corpus — a sidecar that
+# goes missing falls back silently, which is a gate weaker than declared and
+# unobservable at the tree SHA. A policy node's absence is visible to the same
+# tooling that reports dead links.
+
 # Statuses that make an unconnected node an *intentional* frontier, not an orphan.
-SEED_STATUSES = set()
+DEFAULT_SEED_STATUSES = frozenset({"proposed", "draft", "seed"})
 # Tags that signal the same intent.
-SEED_TAGS = {"standalone"}
+DEFAULT_SEED_TAGS = frozenset({"standalone", "frontier"})
+# Subject scopes whose truth does not live in the tree, and so must declare how
+# they are discharged. `commit` is the default scope and needs no discharge.
+DEFAULT_SCOPES_REQUIRING_DISCHARGE = frozenset({"per-machine", "deployment"})
+# Accepted ways to discharge such a scope.
+DEFAULT_DISCHARGE_FORMS = frozenset({"heartbeat", "named-unverifiable"})
+
+# Back-compat module-level names (previously hardcoded; SEED_STATUSES was empty,
+# which silently contradicted the README's disposition table).
+SEED_STATUSES = DEFAULT_SEED_STATUSES
+SEED_TAGS = DEFAULT_SEED_TAGS
+
+_FM_SPLIT = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.S)
+
+
+@dataclass(frozen=True)
+class Policy:
+    """Corpus disposition policy. Loaded from a policy node, else defaults."""
+
+    seed_statuses: frozenset[str] = DEFAULT_SEED_STATUSES
+    seed_tags: frozenset[str] = DEFAULT_SEED_TAGS
+    scopes_requiring_discharge: frozenset[str] = DEFAULT_SCOPES_REQUIRING_DISCHARGE
+    discharge_forms: frozenset[str] = DEFAULT_DISCHARGE_FORMS
+    # Sibling ADR roots in the same product, relative to this root or absolute.
+    # A corpus is per-repo: a reference to a decision living in a sibling root is
+    # a documented coverage edge, NOT a dangling link. Without this, one-root
+    # validation reports every cross-root reference as broken — a validator that
+    # cannot say "outside my root" says "missing" instead.
+    sibling_roots: tuple[str, ...] = ()
+    source: str = "defaults"
+
+    @property
+    def is_declared(self) -> bool:
+        """True when a policy node supplied these values."""
+        return self.source != "defaults"
+
+
+def _as_frozenset(val: Any, fallback: frozenset[str]) -> frozenset[str]:
+    if val is None:
+        return fallback
+    items = val if isinstance(val, (list, tuple, set)) else [val]
+    out = {str(i).strip().lower() for i in items if str(i).strip()}
+    return frozenset(out) if out else fallback
+
+
+def load_policy(root: Path) -> Policy:
+    """Find the corpus policy node in `root` and read its frontmatter.
+
+    A policy node is any top-level markdown file whose frontmatter declares
+    `type: policy`. Absent or unreadable, documented defaults apply and
+    `Policy.source` stays "defaults" so callers can report which was used.
+    """
+    try:
+        candidates = sorted(p for p in root.glob("*.md") if p.is_file())
+    except OSError:
+        return Policy()
+    for path in candidates:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        m = _FM_SPLIT.match(text)
+        if not m:
+            continue
+        try:
+            meta = yaml.safe_load(m.group(1)) or {}
+        except yaml.YAMLError:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        if str(meta.get("type", "")).strip().lower() != "policy":
+            continue
+        return Policy(
+            seed_statuses=_as_frozenset(meta.get("seed_statuses"), DEFAULT_SEED_STATUSES),
+            seed_tags=_as_frozenset(meta.get("seed_tags"), DEFAULT_SEED_TAGS),
+            scopes_requiring_discharge=_as_frozenset(
+                meta.get("scopes_requiring_discharge"), DEFAULT_SCOPES_REQUIRING_DISCHARGE
+            ),
+            discharge_forms=_as_frozenset(meta.get("discharge_forms"), DEFAULT_DISCHARGE_FORMS),
+            sibling_roots=_as_paths(meta.get("sibling_roots")),
+            source=path.name,
+        )
+    return Policy()
+
+
+def _as_paths(val: Any) -> tuple[str, ...]:
+    if val is None:
+        return ()
+    items = val if isinstance(val, (list, tuple)) else [val]
+    return tuple(str(i).strip() for i in items if str(i).strip())
+
+
+def sibling_root_ids(root: Path, policy: Policy) -> frozenset[str]:
+    """Canonical ADR ids present in the declared sibling roots.
+
+    Used to disposition a reference that does not resolve in THIS root: if it
+    resolves in a declared sibling, it is a cross-root coverage edge (signal),
+    not a dangling reference (defect).
+    """
+    if not policy.sibling_roots:
+        return frozenset()
+    found: set[str] = set()
+    for spec in policy.sibling_roots:
+        p = Path(spec).expanduser()
+        if not p.is_absolute():
+            p = (root / spec).resolve()
+        try:
+            entries = list(p.glob("*.md"))
+        except OSError:
+            continue
+        for f in entries:
+            m = re.match(r"0*(\d+)", f.name)
+            if m:
+                found.add(f"ADR-{int(m.group(1))}")
+    return frozenset(found)
 
 
 def resolve_root(explicit: str | None = None) -> Path:
