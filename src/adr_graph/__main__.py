@@ -32,7 +32,7 @@ from .graph import Graph, canonify
 
 
 def _emit(obj: object) -> None:
-    print(obj if isinstance(obj, str) else json.dumps(obj, indent=2))
+    print(obj if isinstance(obj, str) else json.dumps(obj, indent=2, default=str))
 
 
 def _cli(argv: list[str]) -> int:

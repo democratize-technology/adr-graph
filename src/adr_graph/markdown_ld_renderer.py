@@ -36,7 +36,7 @@ def render_response(
         "mainEntity": json_ld_data,
     }
     
-    json_ld_str = json.dumps(json_ld, indent=2)
+    json_ld_str = json.dumps(json_ld, indent=2, default=str)
     
     # Build navigation section
     nav_section = ""

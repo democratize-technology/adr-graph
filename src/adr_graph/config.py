@@ -48,6 +48,11 @@ DEFAULT_SCOPES_REQUIRING_DISCHARGE = frozenset({"per-machine", "deployment"})
 # Accepted ways to discharge such a scope.
 DEFAULT_DISCHARGE_FORMS = frozenset({"heartbeat", "named-unverifiable"})
 
+# By default, singletons are treated as defects (not deliberate).
+# A corpus policy node can configure `disallow_singletons: false` (or specify seed_statuses/seed_tags)
+# to re-enable intentional singleton frontiers.
+DEFAULT_DISALLOW_SINGLETONS = True
+
 # Back-compat module-level names (previously hardcoded; SEED_STATUSES was empty,
 # which silently contradicted the README's disposition table).
 SEED_STATUSES = DEFAULT_SEED_STATUSES
@@ -60,6 +65,7 @@ _FM_SPLIT = re.compile(r"^---\s*\n(.*?)\n---\s*\n?", re.S)
 class Policy:
     """Corpus disposition policy. Loaded from a policy node, else defaults."""
 
+    disallow_singletons: bool = DEFAULT_DISALLOW_SINGLETONS
     seed_statuses: frozenset[str] = DEFAULT_SEED_STATUSES
     seed_tags: frozenset[str] = DEFAULT_SEED_TAGS
     scopes_requiring_discharge: frozenset[str] = DEFAULT_SCOPES_REQUIRING_DISCHARGE
@@ -113,7 +119,17 @@ def load_policy(root: Path) -> Policy:
             continue
         if str(meta.get("type", "")).strip().lower() != "policy":
             continue
+
+        disallow_singletons = DEFAULT_DISALLOW_SINGLETONS
+        if "disallow_singletons" in meta:
+            disallow_singletons = bool(meta.get("disallow_singletons"))
+        elif "allow_intentional_singletons" in meta:
+            disallow_singletons = not bool(meta.get("allow_intentional_singletons"))
+        elif "seed_statuses" in meta or "seed_tags" in meta:
+            disallow_singletons = False
+
         return Policy(
+            disallow_singletons=disallow_singletons,
             seed_statuses=_as_frozenset(meta.get("seed_statuses"), DEFAULT_SEED_STATUSES),
             seed_tags=_as_frozenset(meta.get("seed_tags"), DEFAULT_SEED_TAGS),
             scopes_requiring_discharge=_as_frozenset(

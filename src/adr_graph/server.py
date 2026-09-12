@@ -210,7 +210,7 @@ async def export(fmt: str = "json", g: Graph = Depends(get_graph)) -> Any:
         description=f"Exported topology in {fmt.upper()} format.",
         json_ld_type="ExportAction",
         json_ld_data=res if isinstance(res, dict) else {"content": res},
-        markdown_body=f"```json\n{json.dumps(res, indent=2)}\n```" if isinstance(res, dict) else res,
+        markdown_body=f"```json\n{json.dumps(res, indent=2, default=str)}\n```" if isinstance(res, dict) else res,
     )
 
 
@@ -559,8 +559,8 @@ async def review_adr(adr_id: str, g: Graph = Depends(get_graph)) -> str:
 ```
 
 ### Topological Context
-- Neighbors (Depth 1): {json.dumps(neighbors, indent=2)}
-- Blast Radius (downstream dependents): {json.dumps(blast, indent=2)}
+- Neighbors (Depth 1): {json.dumps(neighbors, indent=2, default=str)}
+- Blast Radius (downstream dependents): {json.dumps(blast, indent=2, default=str)}
 
 Please evaluate the ADR for:
 1. Architectural soundness and tradeoffs.

@@ -81,11 +81,15 @@ class Graph:
         return sorted(discharged, key=key), sorted(undischarged, key=key)
 
     def singletons(self) -> tuple[list[str], list[str]]:
-        """Returns (intentional_frontier, orphan_suspects)."""
+        """Returns (intentional_frontier, orphan_suspects).
+
+        When policy has disallow_singletons=True (default), all singletons are
+        treated as orphan defects and none as intentional frontiers.
+        """
         intentional, suspect = [], []
         for nid, adr in self.adrs.items():
             if not self.out[nid] and not self.inn[nid]:
-                if self._intentional_singleton(adr):
+                if not self.policy.disallow_singletons and self._intentional_singleton(adr):
                     intentional.append(nid)
                 else:
                     suspect.append(nid)
@@ -314,7 +318,15 @@ class Graph:
         bleeds = self.cross_repo_bleeds()
         scoped, undischarged = self.subject_scopes()
         connected = sum(1 for nid in self.adrs if self.out[nid] or self.inn[nid])
-        ok = not broken and not recip and not okf_viol and not dark and not bleeds and not undischarged
+        ok = (
+            not broken
+            and not recip
+            and not okf_viol
+            and not dark
+            and not bleeds
+            and not undischarged
+            and (not self.policy.disallow_singletons or not suspect)
+        )
         return {
             "ok": ok,
             "meta": {

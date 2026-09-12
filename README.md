@@ -32,16 +32,15 @@ dispositioned as either an **intentional frontier** (a decision you'll connect l
 
 | Finding | Intentional (signal) | Accidental (defect) |
 |---|---|---|
-| Singleton | `status: proposed/draft/seed`, `standalone: true`, or a seed tag | `status: accepted` but wired to nothing |
+| Singleton | `disallow_singletons: false` in policy **and** (`status: proposed/draft/seed`, `standalone: true`, or seed tag) | Default case: disconnected node (defect) |
 | Dead link | target listed in the node's `planned:` / `forward_refs:` | undeclared reference to a missing ADR |
 | Subject scope | `subject_scope:` outside the tree **and** `discharged_by:` says how it is observed | `subject_scope:` outside the tree with no declared discharge |
 | Cross-root ref | target resolves in a root listed in `sibling_roots:` | target resolves nowhere |
 
-`validate` returns `ok: false` **only on genuine rot** — undeclared dead links, broken
-reciprocity, OKF violations (missing `type` field), or undischarged subject scopes.
-Intentional singletons, planned forward-references and discharged scopes are reported under
-`signals`, never as failures. This is what lets the agent "spread out nodes as it works"
-without the validator fighting unfinished thinking.
+`validate` returns `ok: false` on genuine rot — orphan singletons (by default), undeclared dead links,
+broken reciprocity, OKF violations (missing `type` field), or undischarged subject scopes.
+When a corpus policy sets `disallow_singletons: false` (or configures `seed_statuses`), intentional
+singletons are excused as signals rather than failures.
 
 ## Where a claim's subject lives
 
@@ -109,6 +108,7 @@ whose frontmatter declares `type: policy`.
 ---
 type: policy
 title: Corpus disposition policy
+disallow_singletons: false # allow intentional frontiers (defaults to true)
 seed_statuses: [proposed, draft, seed]
 seed_tags: [standalone, frontier]
 scopes_requiring_discharge: [per-machine, deployment]

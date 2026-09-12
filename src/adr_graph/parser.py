@@ -189,7 +189,7 @@ def parse_dir(
     adrs: dict[str, ADR] = {}
     md_files = []
     for path in sorted(root.rglob("*.md")):
-        if path.name.lower() in {"readme.md", "index.md", "log.md"}:
+        if path.name.lower() in {"readme.md", "index.md", "log.md", "policy.md"}:
             continue
         md_files.append(path)
         

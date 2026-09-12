@@ -64,14 +64,23 @@ def test_parses_both_link_channels(corpus):
     assert "ADR-2" in g.out["ADR-1"]
 
 
-def test_singleton_classification(corpus):
-    """ADR-5 (proposed) is an intentional frontier per the README disposition table;
-    ADR-7 (standalone: true) per the marker; ADR-6 (accepted, wired to nothing) is the
-    only orphan suspect. This previously asserted that ADR-5 was a suspect, which
-    certified the SEED_STATUSES=set() defect rather than catching it."""
+def test_singleton_classification_defaults_to_defects(corpus):
+    """By default, singletons are not treated as deliberate: all isolated nodes are defects."""
     intentional, suspect = Graph.build(corpus).singletons()
-    assert set(intentional) == {"ADR-5", "ADR-7"}   # proposed status + standalone marker
-    assert suspect == ["ADR-6"]                     # accepted but linked to nothing
+    assert intentional == []
+    assert set(suspect) == {"ADR-5", "ADR-6", "ADR-7"}
+
+
+def test_singleton_classification_policy_opt_in(corpus):
+    """Corpus policy node with disallow_singletons: false restores intentional singleton frontiers."""
+    (corpus / "policy.md").write_text(
+        "---\ntype: policy\ntitle: Policy\nstandalone: true\ndisallow_singletons: false\n---\n\n# Policy\n",
+        encoding="utf-8",
+    )
+    intentional, suspect = Graph.build(corpus).singletons()
+    assert set(intentional) == {"ADR-5", "ADR-7"}
+    assert suspect == ["ADR-6"]
+    (corpus / "policy.md").unlink()
 
 
 def test_dead_link_disposition(corpus):
@@ -95,10 +104,32 @@ def test_drift_detects_body_only_link(corpus):
 
 def test_validate_fails_only_on_rot(corpus):
     rep = Graph.build(corpus).report()
-    assert rep["ok"] is False                     # broken link + reciprocity exist
+    assert rep["ok"] is False                     # broken link + reciprocity + orphan suspects exist
     assert rep["meta"]["adrs"] == 8
-    assert len(rep["signals"]["intentional_singletons"]) == 2   # ADR-5 proposed, ADR-7 standalone
+    assert len(rep["signals"]["intentional_singletons"]) == 0   # by default singletons are not intentional
+    assert len(rep["defects"]["orphan_suspects"]) == 3          # ADR-5, ADR-6, ADR-7 all defects
     assert rep["meta"]["policy_source"] == "defaults"           # no policy node in this corpus
+
+
+def test_validate_singletons_fail_when_disallowed(tmp_path: Path):
+    """A corpus with only an isolated proposed ADR fails validation by default, but passes if policy allows singletons."""
+    (tmp_path / "001-proposed.md").write_text(
+        "---\nid: ADR-001\ntitle: One\ntype: adr\ntimestamp: 2026-09-06\nstatus: proposed\n---\n\n# ADR-001\n",
+        encoding="utf-8",
+    )
+    rep_default = Graph.build(tmp_path).report()
+    assert rep_default["ok"] is False
+    assert rep_default["defects"]["orphan_suspects"] == ["ADR-1"]
+
+    # Now add policy node opting in to allowing singletons
+    (tmp_path / "policy.md").write_text(
+        "---\ntype: policy\ntitle: Policy\nstandalone: true\ndisallow_singletons: false\n---\n\n# Policy\n",
+        encoding="utf-8",
+    )
+    rep_opt_in = Graph.build(tmp_path).report()
+    assert rep_opt_in["ok"] is True
+    assert rep_opt_in["defects"]["orphan_suspects"] == []
+    assert set(rep_opt_in["signals"]["intentional_singletons"]) == {"ADR-1"}
 
 
 # --- subject_scope disposition ------------------------------------------------

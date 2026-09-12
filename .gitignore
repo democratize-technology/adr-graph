@@ -11,3 +11,8 @@
 !/tests/
 !/tests/**/
 !/tests/**/*.py
+
+!/docs/
+!/docs/**/
+!/docs/**/*.md
+
