@@ -171,17 +171,27 @@ Tools:
 * `propose_adr(title, status?, context?, tags?, root?)`: Scaffold a new ADR file.
 * `hover_context(file_path, root?)`: Return architectural context for a file path (matches against `code_paths` globs in ADR frontmatter).
 * `migrate_okf(dry_run?, root?)`: Migrate corpus to OKF v0.1 — adds type, converts date→timestamp, synthesizes descriptions, generates `index.md`. Dry-run by default.
+* `audit_diff(files?, git_diff?, root?)`: Actively audit code changes or files against governing ADR invariants (`expect: present`, `expect: absent`).
+* `task_briefing(task, files?, root?)`: Synthesize an architectural briefing, invariant checklist, downstream blast radius, and neighborhood context for an implementation task.
+* `coverage(source_dirs?, churn_days?, root?)`: Comprehensive codebase governance coverage report, identifying subsystems, high-churn shadow architecture (ungoverned files with frequent git commits), and stale code paths.
+* `scaffold_invariants(adr, apply?, root?)`: Inspect governed code files and automatically synthesize candidate `<!-- adr:requirements -->` blocks for class definitions, configs, and exported interfaces.
+* `install_hook(hook_type?, force?)`: Install a zero-config executable git pre-commit hook that validates graph integrity and audits staged changes against invariants before every commit.
 
 Also exposes the `adr://{adr_id}` resource to get raw markdown content natively.
 
 ## Use as a CLI / CI gate
 
-Same binary, with a subcommand. Exits non-zero on rot, so it drops straight into CI or a
+Same binary, with a subcommand. Exits non-zero on rot or invariant violations, so it drops straight into CI or a
 pre-commit hook:
 
 ```bash
-adr-graph validate /path/to/docs/adr                      # exit 1 if broken links or reciprocity breaks
+adr-graph validate /path/to/docs/adr                      # exit 1 if broken links, singletons, or reciprocity breaks
 adr-graph okf-conformance                                  # OKF v0.1 field coverage and violations
+adr-graph audit src/auth/config.py src/db/pool.py          # audit files against governing ADR invariants (exit 1 on violation)
+adr-graph briefing "Implement JWT refresh tokens" src/auth # synthesize architectural briefing & invariant checklist
+adr-graph coverage                                         # codebase coverage & high-churn shadow architecture report
+adr-graph scaffold-invariants ADR-2 --apply                # synthesize & append invariant block to ADR-2
+adr-graph install-hook                                     # install executable .git/hooks/pre-commit gate
 adr-graph singletons                                       # intentional frontier vs orphan suspects
 adr-graph neighbors ADR-401 2                              # authored-link neighbourhood (grounding context)
 adr-graph reconcile ADR-3 --apply                          # derive frontmatter `related` from body links
