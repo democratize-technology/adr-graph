@@ -21,6 +21,9 @@ With a subcommand, acts as a CLI (handy as a CI gate) — same logic, no MCP run
   adr-graph okf-conformance [ROOT]                         # OKF v0.1 conformance report
   adr-graph audit [FILES...]                               # verify code changes against governing ADR invariants
   adr-graph briefing TASK [FILES...]                       # synthesize architectural context briefing for a task
+  adr-graph coverage [ROOT] [--dirs dir1,dir2]             # codebase coverage & shadow architecture report
+  adr-graph scaffold-invariants ADR [--apply] [ROOT]       # synthesize candidate invariants from governed code
+  adr-graph install-hook [--force]                         # install git pre-commit verification hook
 """
 
 from __future__ import annotations
@@ -93,6 +96,25 @@ def _cli(argv: list[str]) -> int:
         rest.pop(idx)
         while idx < len(rest) and not rest[idx].startswith("--"):
             files_arg.append(rest.pop(idx))
+
+    dirs_list: list[str] | None = None
+    if "--dirs" in rest:
+        idx = rest.index("--dirs")
+        if idx + 1 < len(rest):
+            dirs_list = [d.strip() for d in rest[idx + 1].split(",") if d.strip()]
+            rest.pop(idx + 1)
+        rest.pop(idx)
+
+    churn_days = 90
+    if "--churn-days" in rest:
+        idx = rest.index("--churn-days")
+        if idx + 1 < len(rest) and rest[idx + 1].isdigit():
+            churn_days = int(rest[idx + 1])
+            rest.pop(idx + 1)
+        rest.pop(idx)
+
+    force = "--force" in rest
+    rest = [a for a in rest if a != "--force"]
 
     if cmd == "validate":
         rep = Graph.build(resolve_root(rest[0] if rest else None)).report()
@@ -268,6 +290,29 @@ def _cli(argv: list[str]) -> int:
         res = task_briefing(g, task=task_str, files=files_list if files_list else None)
         _emit(res.to_dict())
         return 0
+    if cmd == "coverage":
+        from .coverage import calculate_coverage
+        target_root = root_arg or (rest[0] if rest and not rest[0].startswith("--") else None)
+        g = Graph.build(resolve_root(target_root))
+        res = calculate_coverage(g, source_dirs=dirs_list, churn_days=churn_days)
+        _emit(res.to_dict())
+        return 0
+    if cmd == "scaffold-invariants":
+        if not rest:
+            sys.stderr.write("Error: missing ADR argument\nUsage: adr-graph scaffold-invariants ADR [--apply] [ROOT]\n")
+            return 2
+        from .coverage import scaffold_invariants
+        adr = rest[0]
+        target_root = root_arg or (rest[1] if len(rest) > 1 and not rest[1].startswith("--") else None)
+        g = Graph.build(resolve_root(target_root))
+        res = scaffold_invariants(g, adr_id=adr, apply=apply)
+        _emit(res)
+        return 0 if res.get("ok") else 1
+    if cmd == "install-hook":
+        from .coverage import install_git_hook
+        res = install_git_hook(force=force)
+        _emit(res)
+        return 0 if res.get("ok") else 1
 
     sys.stderr.write(f"unknown command: {cmd}\n{__doc__}\n")
     return 2

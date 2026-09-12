@@ -1170,3 +1170,147 @@ def format_task_briefing(res: dict[str, Any]) -> ToolResult:
         navigation_links=nav,
         structured_content=app,
     )
+
+
+def format_coverage(res: dict[str, Any]) -> ToolResult:
+    tot = res.get("total_source_files", 0)
+    gov = res.get("governed_source_files", 0)
+    pct = res.get("coverage_pct", 0.0)
+    subsystems = res.get("subsystems", [])
+    shadow = res.get("shadow_files", [])
+    stale = res.get("stale_code_paths", [])
+    ranks = res.get("adr_coverage_rank", [])
+    recs = res.get("recommendations", [])
+
+    status_emoji = "🟢" if pct >= 80.0 else ("🟡" if pct >= 50.0 else "🔴")
+    md = f"### Architectural Codebase Coverage: {status_emoji} {pct}%\n\n"
+    md += f"- **Governed Source Files:** `{gov}` of `{tot}`\n"
+    md += f"- **Active Subsystems:** `{len(subsystems)}`\n"
+    md += f"- **High-Churn Shadow Files:** `{len(shadow)}`\n"
+    md += f"- **Stale Code Paths:** `{len(stale)}`\n\n"
+
+    if subsystems:
+        md += "#### 📦 Subsystem Coverage Breakdown\n"
+        md += "| Subsystem | Total Files | Governed | Coverage % | Governing ADRs |\n"
+        md += "| --- | --- | --- | --- | --- |\n"
+        for s in subsystems:
+            adrs_str = ", ".join(f"[{a}](adr://{a})" for a in s["governing_adrs"][:4]) or "*None*"
+            if len(s["governing_adrs"]) > 4:
+                adrs_str += f" (+{len(s['governing_adrs']) - 4})"
+            md += f"| `{s['name']}` | {s['total_files']} | {s['governed_files']} | `{s['coverage_pct']}%` | {adrs_str} |\n"
+        md += "\n"
+
+    if shadow:
+        md += "#### ⚠️ High-Churn Shadow Architecture (Ungoverned files with git commits)\n"
+        md += "| File | 90d Commits | Subsystem |\n| --- | --- | --- |\n"
+        for sf in shadow[:10]:
+            md += f"| `{sf['path']}` | `{sf['commits']}` | `{sf['subsystem']}` |\n"
+        md += "\n"
+
+    if stale:
+        md += "#### 🍂 Stale Code Path Declarations (Match 0 files on disk)\n"
+        for st in stale:
+            md += f"- **[{st['adr_id']}](adr://{st['adr_id']}):** `{st['pattern']}` ({st['adr_title']})\n"
+        md += "\n"
+
+    if ranks:
+        md += "#### 🏆 Top Governing Architecture Decisions\n"
+        md += "| ADR | Title | Files Governed |\n| --- | --- | --- |\n"
+        for r in ranks[:8]:
+            md += f"| [{r['id']}](adr://{r['id']}) | {r['title']} | `{r['governed_files_count']}` |\n"
+        md += "\n"
+
+    if recs:
+        md += "#### 💡 Strategic Recommendations\n"
+        for r in recs:
+            md += f"- {r}\n"
+
+    nav = [
+        {"label": "Run Graph Validation", "uri": "mcp://adr-graph/validate"},
+        {"label": "Audit Diff", "uri": "mcp://adr-graph/audit_diff"},
+    ]
+
+    with PrefabApp(title="Architectural Coverage Report") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading(f"Architectural Coverage: {pct}%", level=2)
+            c.Badge(f"{gov}/{tot} files governed", variant="success" if pct >= 80 else ("secondary" if pct >= 50 else "destructive"))
+            if subsystems:
+                c.Heading("Subsystem Breakdown", level=3)
+                c.DataTable(
+                    columns=[
+                        c.DataTableColumn(key="name", header="Subsystem"),
+                        c.DataTableColumn(key="cov", header="Coverage"),
+                        c.DataTableColumn(key="files", header="Files"),
+                    ],
+                    rows=[
+                        {"name": s["name"], "cov": f"{s['coverage_pct']}%", "files": f"{s['governed_files']}/{s['total_files']}"}
+                        for s in subsystems
+                    ],
+                )
+
+    return render_response(
+        title="Architectural Codebase Coverage",
+        description="Comprehensive architectural governance coverage, shadow architecture detection, and stale path analysis.",
+        json_ld_type="ArchitecturalCoverageReport",
+        json_ld_data=res,
+        markdown_body=md,
+        navigation_links=nav,
+        structured_content=app,
+    )
+
+
+def format_scaffold_invariants(res: dict[str, Any]) -> ToolResult:
+    aid = res.get("adr_id", "")
+    title = res.get("adr_title", "")
+    scanned = res.get("governed_files_scanned", [])
+    invariants = res.get("invariants_scaffolded", [])
+    applied = res.get("applied", False)
+
+    md = f"### Invariant Scaffolding for [{aid}](adr://{aid}): {title}\n\n"
+    status_str = "✅ Applied to ADR file" if applied else "📋 Dry-run preview (Pass `apply=True` to persist)"
+    md += f"**Status:** {status_str}\n\n"
+    md += f"- **Governed Files Scanned:** `{len(scanned)}`\n"
+    md += f"- **Candidate Invariants Synthesized:** `{len(invariants)}`\n\n"
+
+    if invariants:
+        md += "#### 🛡️ Scaffolded Invariants\n"
+        md += "| Requirement ID | Category | Description | Target Path | Pattern |\n"
+        md += "| --- | --- | --- | --- | --- |\n"
+        for inv in invariants:
+            path_str = ", ".join(inv.get("verification", {}).get("paths", []))
+            pat = inv.get("verification", {}).get("pattern", "")
+            md += f"| `{inv['id']}` | `{inv['category']}` | {inv['description']} | `{path_str}` | `{pat}` |\n"
+        md += "\n"
+
+    nav = [
+        {"label": f"Read {aid}", "uri": f"mcp://adr-graph/read?adr={aid}"},
+        {"label": "Run Audit Diff", "uri": "mcp://adr-graph/audit_diff"},
+    ]
+
+    with PrefabApp(title="Scaffolded Invariants") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading(f"Scaffolded Invariants for {aid}", level=2)
+            c.Badge("Applied" if applied else "Preview", variant="success" if applied else "secondary")
+            if invariants:
+                c.DataTable(
+                    columns=[
+                        c.DataTableColumn(key="id", header="Requirement ID"),
+                        c.DataTableColumn(key="desc", header="Description"),
+                        c.DataTableColumn(key="pat", header="Pattern"),
+                    ],
+                    rows=[
+                        {"id": inv["id"], "desc": inv["description"], "pat": inv.get("verification", {}).get("pattern", "")}
+                        for inv in invariants
+                    ],
+                )
+
+    return render_response(
+        title=f"Scaffolded Invariants for {aid}",
+        description=f"Synthesized invariant verification requirements for {aid}.",
+        json_ld_type="InvariantScaffoldingReport",
+        json_ld_data=res,
+        markdown_body=md,
+        navigation_links=nav,
+        structured_content=app,
+    )
+

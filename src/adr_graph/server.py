@@ -41,8 +41,15 @@ from .formatters import (
     format_mutation,
     format_audit_diff,
     format_task_briefing,
+    format_coverage,
+    format_scaffold_invariants,
 )
 from .auditor import audit_diff as run_audit_diff, task_briefing as run_task_briefing
+from .coverage import (
+    calculate_coverage as run_coverage,
+    scaffold_invariants as run_scaffold_invariants,
+    install_git_hook as run_install_hook,
+)
  
 mcp = FastMCP("adr-graph", list_page_size=50)
 
@@ -600,6 +607,45 @@ async def task_briefing(
         g = await _graph(ctx, root)
     res = run_task_briefing(g, task=task, files=files)
     return format_task_briefing(res.to_dict())
+
+
+@mcp.tool(app=True)
+async def coverage(
+    ctx: Context = CurrentContext(),
+    source_dirs: list[str] | None = None,
+    churn_days: int = 90,
+    root: str = "",
+    g: Graph = Depends(get_graph),
+) -> ToolResult:
+    """Calculate architectural codebase coverage, shadow architecture (high-churn ungoverned files), and stale code paths."""
+    if root:
+        g = await _graph(ctx, root)
+    res = run_coverage(g, source_dirs=source_dirs, churn_days=churn_days)
+    return format_coverage(res.to_dict())
+
+
+@mcp.tool(app=True)
+async def scaffold_invariants(
+    ctx: Context = CurrentContext(),
+    adr: str = "",
+    apply: bool = False,
+    root: str = "",
+    g: Graph = Depends(get_graph),
+) -> ToolResult:
+    """Analyze code paths governed by an ADR and scaffold candidate invariant requirements."""
+    if root:
+        g = await _graph(ctx, root)
+    res = run_scaffold_invariants(g, adr_id=adr, apply=apply)
+    return format_scaffold_invariants(res)
+
+
+@mcp.tool
+async def install_hook(
+    hook_type: str = "pre-commit",
+    force: bool = False,
+) -> dict[str, Any]:
+    """Install a zero-config git pre-commit hook that enforces ADR graph validation and diff audits."""
+    return run_install_hook(hook_type=hook_type, force=force)
 
 
 @mcp.tool
