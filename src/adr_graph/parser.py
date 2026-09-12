@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -74,6 +75,7 @@ class ADR:
     planned: set[str] = field(default_factory=set)
     standalone: bool = False
     unparseable_yaml: bool = False
+    raw_fm: dict[str, Any] = field(default_factory=dict)
 
 
 def _fm_refs(val: object) -> list[tuple[str, bool]]:
@@ -116,6 +118,7 @@ def parse_file(path: Path, log_cb: callable[[str, str], None] | None = None) -> 
 
     adr = ADR(id=nid, num=num, path=path)
     adr.unparseable_yaml = unparseable
+    adr.raw_fm = meta
     adr.title = str(meta.get("title") or path.stem)
     adr.type = str(meta.get("type") or "").strip()
     adr.description = str(meta.get("description") or "").strip()

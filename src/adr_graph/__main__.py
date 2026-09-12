@@ -19,6 +19,8 @@ With a subcommand, acts as a CLI (handy as a CI gate) — same logic, no MCP run
   adr-graph propose TITLE [CONTEXT] [--tags tag1,tag2,...] [ROOT]
   adr-graph migrate-okf [ROOT]
   adr-graph okf-conformance [ROOT]                         # OKF v0.1 conformance report
+  adr-graph audit [FILES...]                               # verify code changes against governing ADR invariants
+  adr-graph briefing TASK [FILES...]                       # synthesize architectural context briefing for a task
 """
 
 from __future__ import annotations
@@ -76,6 +78,21 @@ def _cli(argv: list[str]) -> int:
             tags_list = [t.strip() for t in rest[idx + 1].split(",")]
             rest.pop(idx + 1)
         rest.pop(idx)
+
+    root_arg = None
+    if "--root" in rest:
+        idx = rest.index("--root")
+        if idx + 1 < len(rest):
+            root_arg = rest[idx + 1]
+            rest.pop(idx + 1)
+        rest.pop(idx)
+
+    files_arg: list[str] = []
+    if "--files" in rest:
+        idx = rest.index("--files")
+        rest.pop(idx)
+        while idx < len(rest) and not rest[idx].startswith("--"):
+            files_arg.append(rest.pop(idx))
 
     if cmd == "validate":
         rep = Graph.build(resolve_root(rest[0] if rest else None)).report()
@@ -233,21 +250,47 @@ def _cli(argv: list[str]) -> int:
         from . import mutate
         _emit(asyncio.run(mutate.migrate_okf(resolve_root(root), dry_run=not apply)))
         return 0
+    if cmd == "audit":
+        from .auditor import audit_diff
+        files_to_check = files_arg + [f for f in rest if not f.startswith("--")]
+        g = Graph.build(resolve_root(root_arg))
+        res = audit_diff(g, files=files_to_check if files_to_check else None)
+        _emit(res.to_dict())
+        return 0 if res.ok else 1
+    if cmd == "briefing":
+        if not rest and not files_arg:
+            sys.stderr.write("Error: missing TASK argument\nUsage: adr-graph briefing TASK [FILES...]\n")
+            return 2
+        from .auditor import task_briefing
+        task_str = rest[0] if rest else ""
+        files_list = files_arg + [f for f in rest[1:] if not f.startswith("--")]
+        g = Graph.build(resolve_root(root_arg))
+        res = task_briefing(g, task=task_str, files=files_list if files_list else None)
+        _emit(res.to_dict())
+        return 0
 
     sys.stderr.write(f"unknown command: {cmd}\n{__doc__}\n")
     return 2
 
 
-def main() -> None:
-    argv = sys.argv[1:]
+def main(argv: list[str] | None = None) -> int:
+    is_cli_call = argv is not None
+    if argv is None:
+        argv = sys.argv[1:]
     if argv and argv[0] not in {"-h", "--help"}:
-        raise SystemExit(_cli(argv))
+        ret = _cli(argv)
+        if not is_cli_call:
+            raise SystemExit(ret)
+        return ret
     if argv:
         print(__doc__)
-        raise SystemExit(0)
+        if not is_cli_call:
+            raise SystemExit(0)
+        return 0
     from .server import mcp
 
     mcp.run()
+    return 0
 
 
 if __name__ == "__main__":

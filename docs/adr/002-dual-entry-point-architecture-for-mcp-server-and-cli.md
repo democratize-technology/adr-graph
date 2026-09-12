@@ -40,3 +40,27 @@ Tools designed solely for human terminal use fail to integrate with agentic work
 Chosen option: Unified entry point.
 
 When invoked without subcommands (`adr-graph`), it starts the FastMCP server over stdio (`mcp.run()`). When invoked with subcommands (`adr-graph validate`, `adr-graph singletons`, etc.), it executes the CLI runner directly, sharing the exact same underlying [[ADR-3]] graph engine and adhering to the [[ADR-1]] OKF standard. Rich interactive outputs for agents and IDEs are formatted via [[ADR-7]].
+
+<!-- adr:requirements -->
+```yaml
+requirements:
+  - id: "ADR-002-CLI-001"
+    description: "Server stdio execution must invoke mcp.run()"
+    category: architecture
+    verification:
+      type: grep
+      pattern: 'mcp\.run\(\)'
+      paths:
+        - "src/adr_graph/__main__.py"
+      expect: present
+  - id: "ADR-002-CLI-002"
+    description: "FastMCP instance named adr-graph"
+    category: architecture
+    verification:
+      type: grep
+      pattern: 'FastMCP\("adr-graph"'
+      paths:
+        - "src/adr_graph/server.py"
+      expect: present
+```
+<!-- /adr:requirements -->

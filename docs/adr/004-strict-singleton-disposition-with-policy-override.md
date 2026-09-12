@@ -39,3 +39,18 @@ An isolated architectural decision that references nothing and is referenced by 
 Chosen option: Strict singleton disallowance by default with policy override.
 
 In accordance with [[ADR-1]], all disconnected nodes are flagged as orphan defects. If a repository needs to author disconnected frontier drafts, it explicitly states so in its [[ADR-6]] policy node (`disallow_singletons: false`).
+
+<!-- adr:requirements -->
+```yaml
+requirements:
+  - id: "ADR-004-DISP-001"
+    description: "Default singleton disallowance must be true"
+    category: validation
+    verification:
+      type: grep
+      pattern: 'DEFAULT_DISALLOW_SINGLETONS = True'
+      paths:
+        - "src/adr_graph/config.py"
+      expect: present
+```
+<!-- /adr:requirements -->

@@ -11,8 +11,10 @@ from typing import Any
 from pathlib import Path
 
 from collections.abc import Sequence
+import json
 from fastmcp import FastMCP, Context
 from fastmcp.server.providers import Provider
+from fastmcp.server.transforms import ResourcesAsTools, PromptsAsTools
 from fastmcp.resources import Resource
 from fastmcp.dependencies import Depends, CurrentContext
 from fastmcp.tools.base import ToolResult
@@ -37,12 +39,12 @@ from .formatters import (
     format_drift,
     format_blast_radius,
     format_mutation,
+    format_audit_diff,
+    format_task_briefing,
 )
-import json
-
+from .auditor import audit_diff as run_audit_diff, task_briefing as run_task_briefing
+ 
 mcp = FastMCP("adr-graph", list_page_size=50)
-
-from fastmcp.server.transforms import ResourcesAsTools, PromptsAsTools
 
 mcp.add_transform(ResourcesAsTools(mcp))
 mcp.add_transform(PromptsAsTools(mcp))
@@ -567,6 +569,37 @@ Please evaluate the ADR for:
 2. Topological consistency (are we missing any dependencies or relations with its neighbors?).
 3. Adherence to the Open Knowledge Format (OKF) guidelines.
 """
+
+
+
+@mcp.tool(app=True)
+async def audit_diff(
+    ctx: Context = CurrentContext(),
+    files: list[str] | None = None,
+    git_diff: str = "",
+    root: str = "",
+    g: Graph = Depends(get_graph),
+) -> ToolResult:
+    """Audit code changes or specific files against invariants declared in governing ADRs."""
+    if root:
+        g = await _graph(ctx, root)
+    res = run_audit_diff(g, files=files, git_diff=git_diff or None)
+    return format_audit_diff(res.to_dict())
+
+
+@mcp.tool(app=True)
+async def task_briefing(
+    ctx: Context = CurrentContext(),
+    task: str = "",
+    files: list[str] | None = None,
+    root: str = "",
+    g: Graph = Depends(get_graph),
+) -> ToolResult:
+    """Synthesize a task-specific architectural briefing, invariants checklist, and governing decision summary."""
+    if root:
+        g = await _graph(ctx, root)
+    res = run_task_briefing(g, task=task, files=files)
+    return format_task_briefing(res.to_dict())
 
 
 @mcp.tool

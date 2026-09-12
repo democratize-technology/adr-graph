@@ -18,6 +18,7 @@ from .parser import ADR, parse_dir
 @dataclass
 class Graph:
     adrs: dict[str, ADR]
+    root: Path = field(default_factory=Path.cwd)
     out: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     inn: dict[str, set[str]] = field(default_factory=lambda: defaultdict(set))
     policy: Policy = field(default_factory=Policy)
@@ -33,7 +34,7 @@ class Graph:
     ) -> "Graph":
         adrs = parse_dir(root, progress_cb=progress_cb, log_cb=log_cb)
         pol = load_policy(root)
-        g = cls(adrs=adrs, policy=pol, sibling_ids=sibling_root_ids(root, pol))
+        g = cls(adrs=adrs, root=root, policy=pol, sibling_ids=sibling_root_ids(root, pol))
         nodes = set(adrs)
         for nid, adr in adrs.items():
             refs = set(adr.body_refs)

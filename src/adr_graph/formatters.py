@@ -8,16 +8,14 @@ from fastmcp.tools.base import ToolResult
 
 from prefab_ui.app import PrefabApp
 import prefab_ui.components as c
-from prefab_ui.actions.mcp import CallTool, SendMessage
-from prefab_ui.actions import SetState, ShowToast
-from prefab_ui.rx import Rx, RESULT
+from prefab_ui.actions.mcp import CallTool
 
 def format_validate(res: dict[str, Any]) -> ToolResult:
     status_emoji = "✅" if res["ok"] else "❌"
     md = f"### Status: {status_emoji} {'ADR Graph is clean' if res['ok'] else 'ADR Graph has defects'}\n\n"
     
     md += "#### 📊 Summary Metrics\n"
-    md += f"| Metric | Value |\n| --- | --- |\n"
+    md += "| Metric | Value |\n| --- | --- |\n"
     md += f"| Total ADRs | {res['meta']['adrs']} |\n"
     md += f"| Total Edges | {res['meta']['edges']} |\n"
     md += f"| Connected Nodes | {res['meta']['connected']} |\n"
@@ -182,7 +180,7 @@ def format_okf_conformance(res: dict[str, Any]) -> ToolResult:
     md = f"### Conformance Status: {status} ({res['conformance_pct']}% of records comply)\n\n"
     
     md += "#### 📊 Field Coverage Metrics\n"
-    md += f"| Field | Coverage |\n| --- | --- |\n"
+    md += "| Metric | Coverage |\n| --- | --- |\n"
     for field_name, coverage in res["coverage"].items():
         md += f"| {field_name} | {coverage} |\n"
     md += "\n"
@@ -908,7 +906,7 @@ def format_blast_radius(res: dict[str, Any]) -> ToolResult:
                         
     return render_response(
         title=f"Blast Radius of {adr}",
-        description=f"Identifies downstream ADRs that transitively depend on the chosen decision.",
+        description="Identifies downstream ADRs that transitively depend on the chosen decision.",
         json_ld_type="BlastRadiusReport",
         json_ld_data=res,
         markdown_body=md,
@@ -1003,4 +1001,172 @@ def format_mutation(res: dict[str, Any], title: str, description: str) -> ToolRe
         markdown_body=md,
         navigation_links=nav,
         structured_content=app
+    )
+
+
+def format_audit_diff(res: dict[str, Any]) -> ToolResult:
+    ok = res.get("ok", True)
+    files = res.get("files_checked", [])
+    gov_adrs = res.get("governing_adrs", [])
+    checks = res.get("checks", [])
+    unindexed = res.get("unindexed_files", [])
+    recs = res.get("recommendations", [])
+
+    md = "### Status: " + ("✅ All Invariants Satisfied" if ok else "❌ Architectural Violations Detected") + "\n\n"
+    md += f"- **Files Audited:** `{len(files)}`\n"
+    md += f"- **Governing ADRs:** `{len(gov_adrs)}`\n"
+    md += f"- **Invariants Checked:** `{res.get('invariants_checked', 0)}` "
+    md += f"(Passed: `{res.get('invariants_passed', 0)}`, Violated: `{res.get('invariants_violated', 0)}`)\n\n"
+
+    if gov_adrs:
+        md += "#### 🏛️ Governing Architecture Decisions\n"
+        md += "| ADR | Title | Status |\n| --- | --- | --- |\n"
+        for a in gov_adrs:
+            md += f"| [{a['id']}](adr://{a['id']}) | {a['title']} | `{a['status']}` |\n"
+        md += "\n"
+
+    violations = [c for c in checks if c["status"] == "violated"]
+    if violations:
+        md += "#### ⚠️ Invariant Violations\n"
+        for v in violations:
+            md += f"- **[{v['adr']}](adr://{v['adr']}) - {v['id']}:** {v['description']}\n"
+            md += f"  - Path: `{v['target_path']}`\n"
+            md += f"  - Detail: {v['detail']}\n"
+        md += "\n"
+
+    passed = [c for c in checks if c["status"] == "passed"]
+    if passed:
+        md += f"#### 🟢 Satisfied Invariants ({len(passed)})\n"
+        for p in passed:
+            md += f"- **[{p['adr']}](adr://{p['adr']}) - {p['id']}:** {p['description']} (`{p['target_path']}`)\n"
+        md += "\n"
+
+    if unindexed:
+        md += "#### ℹ️ Unindexed Files (No ADR declares `code_paths` for these):\n"
+        for u in unindexed[:10]:
+            md += f"- `{u}`\n"
+        if len(unindexed) > 10:
+            md += f"- ... and {len(unindexed) - 10} more\n"
+        md += "\n"
+
+    if recs:
+        md += "#### 💡 Recommendations\n"
+        for r in recs:
+            md += f"- {r}\n"
+
+    nav = [
+        {"label": "Run Graph Validation", "uri": "mcp://adr-graph/validate"},
+    ]
+    for a in gov_adrs:
+        nav.append({"label": f"Read {a['id']}", "uri": f"mcp://adr-graph/read?adr={a['id']}"})
+
+    with PrefabApp(title="Architectural Diff Audit") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading("Architectural Diff Audit", level=2)
+            c.Badge("All Invariants Passed" if ok else "Violations Detected", variant="success" if ok else "destructive")
+            if violations:
+                c.Heading("Violations", level=3)
+                c.DataTable(
+                    columns=[
+                        c.DataTableColumn(key="adr", header="ADR"),
+                        c.DataTableColumn(key="id", header="Requirement ID"),
+                        c.DataTableColumn(key="desc", header="Description"),
+                        c.DataTableColumn(key="path", header="Target Path"),
+                    ],
+                    rows=[
+                        {"adr": v["adr"], "id": v["id"], "desc": v["description"], "path": v["target_path"]}
+                        for v in violations
+                    ],
+                )
+            with c.Row(gap=2):
+                c.Button("Run Validation", on_click=CallTool("validate"))
+
+    return render_response(
+        title="Architectural Diff Audit",
+        description="Verification report checking code changes against governing ADR invariants.",
+        json_ld_type="AuditReport",
+        json_ld_data=res,
+        markdown_body=md,
+        navigation_links=nav,
+        structured_content=app,
+    )
+
+
+def format_task_briefing(res: dict[str, Any]) -> ToolResult:
+    task = res.get("task", "")
+    files = res.get("files", [])
+    adrs = res.get("primary_adrs", [])
+    invariants = res.get("invariants", [])
+    blast = res.get("blast_radius", [])
+    neighbors = res.get("neighboring_context", [])
+    checklist = res.get("recommended_checklist", [])
+
+    md = f"> **Task:** {task}\n\n"
+
+    if files:
+        md += f"**Target Files:** {', '.join(f'`{f}`' for f in files)}\n\n"
+
+    md += "#### 🎯 Primary Governing Decisions\n"
+    if adrs:
+        md += "| ADR | Title | Status | Tags |\n| --- | --- | --- | --- |\n"
+        for a in adrs:
+            tags = ", ".join(a.get("tags", [])) if a.get("tags") else "None"
+            md += f"| [{a['id']}](adr://{a['id']}) | {a['title']} | `{a['status']}` | `{tags}` |\n"
+        md += "\n"
+    else:
+        md += "*No directly governing ADRs found for this task context.*\n\n"
+
+    if invariants:
+        md += f"#### 🛡️ Declared Invariants to Preserve ({len(invariants)})\n"
+        for inv in invariants:
+            p_str = f" (`{inv['pattern']}`)" if inv.get("pattern") else ""
+            md += f"- **[{inv['adr']}](adr://{inv['adr']}) - {inv['id']}:** {inv['description']}{p_str}\n"
+        md += "\n"
+
+    if blast:
+        md += f"#### 💥 Downstream Blast Radius ({len(blast)} ADRs)\n"
+        md += ", ".join(f"[{b}](adr://{b})" for b in blast[:12])
+        if len(blast) > 12:
+            md += f", ... and {len(blast) - 12} more"
+        md += "\n\n"
+
+    if neighbors:
+        md += "#### 🧭 Related Architectural Neighborhood\n"
+        md += ", ".join(f"[{n}](adr://{n})" for n in neighbors[:10])
+        md += "\n\n"
+
+    if checklist:
+        md += "#### ✅ Agent Implementation Checklist\n"
+        for item in checklist:
+            md += f"- [ ] {item}\n"
+
+    nav = [
+        {"label": "Run Graph Validation", "uri": "mcp://adr-graph/validate"},
+    ]
+    for a in adrs:
+        nav.append({"label": f"Read {a['id']}", "uri": f"mcp://adr-graph/read?adr={a['id']}"})
+
+    with PrefabApp(title="Task Architectural Briefing") as app:
+        with c.Column(gap=4, css_class="p-6"):
+            c.Heading(f"Task Briefing: {task[:50]}", level=2)
+            c.Text(task, css_class="text-sm text-muted-foreground")
+            if adrs:
+                c.Heading("Governing ADRs", level=3)
+                c.DataTable(
+                    columns=[
+                        c.DataTableColumn(key="id", header="ADR ID"),
+                        c.DataTableColumn(key="title", header="Title"),
+                        c.DataTableColumn(key="status", header="Status"),
+                    ],
+                    rows=[{"id": a["id"], "title": a["title"], "status": a["status"]} for a in adrs],
+                )
+
+    return render_response(
+        title="Task Architectural Briefing",
+        description="Contextual architectural briefing and invariant checklist for task implementation.",
+        json_ld_type="ArchitecturalBriefing",
+        json_ld_data=res,
+        markdown_body=md,
+        navigation_links=nav,
+        structured_content=app,
     )
